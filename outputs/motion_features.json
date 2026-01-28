@@ -1,0 +1,756 @@
+[
+  {
+    "ref_idx": 1,
+    "ref_time": 3.212,
+    "peak_time": 3.2,
+    "peak_motion": 0.271655,
+    "offset_from_ref": -0.012,
+    "window_mean": 0.264386,
+    "window_std": 0.006743,
+    "window_max": 0.271655,
+    "window_min": 0.255406,
+    "rise_time": 0.008,
+    "fall_time": 0.092,
+    "peak_to_mean_ratio": 1.0275,
+    "motion_before_peak": 0.271655,
+    "motion_after_peak": 0.264386,
+    "motion_signal": [
+      0.271655,
+      0.266096,
+      0.255406
+    ],
+    "time_signal": [
+      3.2,
+      3.2333,
+      3.2667
+    ]
+  },
+  {
+    "ref_idx": 2,
+    "ref_time": 3.472,
+    "peak_time": 3.4667,
+    "peak_motion": 0.294312,
+    "offset_from_ref": -0.0053,
+    "window_mean": 0.282697,
+    "window_std": 0.008421,
+    "window_max": 0.294312,
+    "window_min": 0.274608,
+    "rise_time": 0.0147,
+    "fall_time": 0.0853,
+    "peak_to_mean_ratio": 1.0411,
+    "motion_before_peak": 0.294312,
+    "motion_after_peak": 0.282697,
+    "motion_signal": [
+      0.294312,
+      0.279171,
+      0.274608
+    ],
+    "time_signal": [
+      3.4667,
+      3.5,
+      3.5333
+    ]
+  },
+  {
+    "ref_idx": 3,
+    "ref_time": 3.912,
+    "peak_time": 3.9667,
+    "peak_motion": 0.271815,
+    "offset_from_ref": 0.0547,
+    "window_mean": 0.255501,
+    "window_std": 0.016528,
+    "window_max": 0.271815,
+    "window_min": 0.232848,
+    "rise_time": 0.0747,
+    "fall_time": 0.0253,
+    "peak_to_mean_ratio": 1.0639,
+    "motion_before_peak": 0.255501,
+    "motion_after_peak": 0.271815,
+    "motion_signal": [
+      0.232848,
+      0.26184,
+      0.271815
+    ],
+    "time_signal": [
+      3.9,
+      3.9333,
+      3.9667
+    ]
+  },
+  {
+    "ref_idx": 4,
+    "ref_time": 4.172,
+    "peak_time": 4.1667,
+    "peak_motion": 0.531248,
+    "offset_from_ref": -0.0053,
+    "window_mean": 0.494824,
+    "window_std": 0.040369,
+    "window_max": 0.531248,
+    "window_min": 0.43854,
+    "rise_time": 0.0147,
+    "fall_time": 0.0853,
+    "peak_to_mean_ratio": 1.0736,
+    "motion_before_peak": 0.531248,
+    "motion_after_peak": 0.494824,
+    "motion_signal": [
+      0.531248,
+      0.514683,
+      0.43854
+    ],
+    "time_signal": [
+      4.1667,
+      4.2,
+      4.2333
+    ]
+  },
+  {
+    "ref_idx": 5,
+    "ref_time": 4.652,
+    "peak_time": 4.7,
+    "peak_motion": 0.372624,
+    "offset_from_ref": 0.048,
+    "window_mean": 0.356384,
+    "window_std": 0.011536,
+    "window_max": 0.372624,
+    "window_min": 0.34692,
+    "rise_time": 0.068,
+    "fall_time": 0.032,
+    "peak_to_mean_ratio": 1.0456,
+    "motion_before_peak": 0.356384,
+    "motion_after_peak": 0.372624,
+    "motion_signal": [
+      0.34692,
+      0.349608,
+      0.372624
+    ],
+    "time_signal": [
+      4.6333,
+      4.6667,
+      4.7
+    ]
+  },
+  {
+    "ref_idx": 6,
+    "ref_time": 4.902,
+    "peak_time": 4.9667,
+    "peak_motion": 0.952337,
+    "offset_from_ref": 0.0647,
+    "window_mean": 0.850787,
+    "window_std": 0.096453,
+    "window_max": 0.952337,
+    "window_min": 0.721143,
+    "rise_time": 0.0847,
+    "fall_time": 0.0153,
+    "peak_to_mean_ratio": 1.1194,
+    "motion_before_peak": 0.850787,
+    "motion_after_peak": 0.952337,
+    "motion_signal": [
+      0.721143,
+      0.878881,
+      0.952337
+    ],
+    "time_signal": [
+      4.9,
+      4.9333,
+      4.9667
+    ]
+  },
+  {
+    "ref_idx": 7,
+    "ref_time": 8.462,
+    "peak_time": 8.5333,
+    "peak_motion": 0.356261,
+    "offset_from_ref": 0.0713,
+    "window_mean": 0.330913,
+    "window_std": 0.023467,
+    "window_max": 0.356261,
+    "window_min": 0.299687,
+    "rise_time": 0.0913,
+    "fall_time": 0.0087,
+    "peak_to_mean_ratio": 1.0766,
+    "motion_before_peak": 0.330913,
+    "motion_after_peak": 0.356261,
+    "motion_signal": [
+      0.299687,
+      0.33679,
+      0.356261
+    ],
+    "time_signal": [
+      8.4667,
+      8.5,
+      8.5333
+    ]
+  },
+  {
+    "ref_idx": 8,
+    "ref_time": 8.772,
+    "peak_time": 8.8333,
+    "peak_motion": 0.552274,
+    "offset_from_ref": 0.0613,
+    "window_mean": 0.480675,
+    "window_std": 0.053476,
+    "window_max": 0.552274,
+    "window_min": 0.423788,
+    "rise_time": 0.0813,
+    "fall_time": 0.0187,
+    "peak_to_mean_ratio": 1.149,
+    "motion_before_peak": 0.480675,
+    "motion_after_peak": 0.552274,
+    "motion_signal": [
+      0.423788,
+      0.465962,
+      0.552274
+    ],
+    "time_signal": [
+      8.7667,
+      8.8,
+      8.8333
+    ]
+  },
+  {
+    "ref_idx": 9,
+    "ref_time": 9.382,
+    "peak_time": 9.3667,
+    "peak_motion": 0.240848,
+    "offset_from_ref": -0.0153,
+    "window_mean": 0.223251,
+    "window_std": 0.012653,
+    "window_max": 0.240848,
+    "window_min": 0.211641,
+    "rise_time": 0.0047,
+    "fall_time": 0.0953,
+    "peak_to_mean_ratio": 1.0788,
+    "motion_before_peak": 0.240848,
+    "motion_after_peak": 0.223251,
+    "motion_signal": [
+      0.240848,
+      0.217266,
+      0.211641
+    ],
+    "time_signal": [
+      9.3667,
+      9.4,
+      9.4333
+    ]
+  },
+  {
+    "ref_idx": 10,
+    "ref_time": 9.692,
+    "peak_time": 9.7667,
+    "peak_motion": 0.369282,
+    "offset_from_ref": 0.0747,
+    "window_mean": 0.347309,
+    "window_std": 0.020917,
+    "window_max": 0.369282,
+    "window_min": 0.319171,
+    "rise_time": 0.0947,
+    "fall_time": 0.0053,
+    "peak_to_mean_ratio": 1.0633,
+    "motion_before_peak": 0.347309,
+    "motion_after_peak": 0.369282,
+    "motion_signal": [
+      0.319171,
+      0.353475,
+      0.369282
+    ],
+    "time_signal": [
+      9.7,
+      9.7333,
+      9.7667
+    ]
+  },
+  {
+    "ref_idx": 11,
+    "ref_time": 10.382,
+    "peak_time": 10.4333,
+    "peak_motion": 0.457887,
+    "offset_from_ref": 0.0513,
+    "window_mean": 0.453249,
+    "window_std": 0.006537,
+    "window_max": 0.457887,
+    "window_min": 0.444004,
+    "rise_time": 0.0713,
+    "fall_time": 0.0287,
+    "peak_to_mean_ratio": 1.0102,
+    "motion_before_peak": 0.453249,
+    "motion_after_peak": 0.457887,
+    "motion_signal": [
+      0.457855,
+      0.444004,
+      0.457887
+    ],
+    "time_signal": [
+      10.3667,
+      10.4,
+      10.4333
+    ]
+  },
+  {
+    "ref_idx": 12,
+    "ref_time": 10.722,
+    "peak_time": 10.8,
+    "peak_motion": 0.671891,
+    "offset_from_ref": 0.078,
+    "window_mean": 0.656505,
+    "window_std": 0.011875,
+    "window_max": 0.671891,
+    "window_min": 0.642983,
+    "rise_time": 0.098,
+    "fall_time": 0.002,
+    "peak_to_mean_ratio": 1.0234,
+    "motion_before_peak": 0.656505,
+    "motion_after_peak": 0.671891,
+    "motion_signal": [
+      0.654642,
+      0.642983,
+      0.671891
+    ],
+    "time_signal": [
+      10.7333,
+      10.7667,
+      10.8
+    ]
+  },
+  {
+    "ref_idx": 13,
+    "ref_time": 12.022,
+    "peak_time": 12.1,
+    "peak_motion": 0.3707,
+    "offset_from_ref": 0.078,
+    "window_mean": 0.345813,
+    "window_std": 0.022342,
+    "window_max": 0.3707,
+    "window_min": 0.316511,
+    "rise_time": 0.098,
+    "fall_time": 0.002,
+    "peak_to_mean_ratio": 1.072,
+    "motion_before_peak": 0.345813,
+    "motion_after_peak": 0.3707,
+    "motion_signal": [
+      0.316511,
+      0.350228,
+      0.3707
+    ],
+    "time_signal": [
+      12.0333,
+      12.0667,
+      12.1
+    ]
+  },
+  {
+    "ref_idx": 14,
+    "ref_time": 12.332,
+    "peak_time": 12.3667,
+    "peak_motion": 0.527204,
+    "offset_from_ref": 0.0347,
+    "window_mean": 0.508455,
+    "window_std": 0.021286,
+    "window_max": 0.527204,
+    "window_min": 0.478684,
+    "rise_time": 0.0547,
+    "fall_time": 0.0453,
+    "peak_to_mean_ratio": 1.0369,
+    "motion_before_peak": 0.502944,
+    "motion_after_peak": 0.52334,
+    "motion_signal": [
+      0.478684,
+      0.527204,
+      0.519477
+    ],
+    "time_signal": [
+      12.3333,
+      12.3667,
+      12.4
+    ]
+  },
+  {
+    "ref_idx": 15,
+    "ref_time": 12.822,
+    "peak_time": 12.9,
+    "peak_motion": 0.34849,
+    "offset_from_ref": 0.078,
+    "window_mean": 0.304118,
+    "window_std": 0.033134,
+    "window_max": 0.34849,
+    "window_min": 0.268889,
+    "rise_time": 0.098,
+    "fall_time": 0.002,
+    "peak_to_mean_ratio": 1.1459,
+    "motion_before_peak": 0.304118,
+    "motion_after_peak": 0.34849,
+    "motion_signal": [
+      0.268889,
+      0.294975,
+      0.34849
+    ],
+    "time_signal": [
+      12.8333,
+      12.8667,
+      12.9
+    ]
+  },
+  {
+    "ref_idx": 16,
+    "ref_time": 13.072,
+    "peak_time": 13.1333,
+    "peak_motion": 0.447091,
+    "offset_from_ref": 0.0613,
+    "window_mean": 0.361476,
+    "window_std": 0.068987,
+    "window_max": 0.447091,
+    "window_min": 0.278154,
+    "rise_time": 0.0813,
+    "fall_time": 0.0187,
+    "peak_to_mean_ratio": 1.2368,
+    "motion_before_peak": 0.361476,
+    "motion_after_peak": 0.447091,
+    "motion_signal": [
+      0.278154,
+      0.359183,
+      0.447091
+    ],
+    "time_signal": [
+      13.0667,
+      13.1,
+      13.1333
+    ]
+  },
+  {
+    "ref_idx": 17,
+    "ref_time": 13.702,
+    "peak_time": 13.7,
+    "peak_motion": 0.252596,
+    "offset_from_ref": -0.002,
+    "window_mean": 0.227553,
+    "window_std": 0.020276,
+    "window_max": 0.252596,
+    "window_min": 0.202935,
+    "rise_time": 0.018,
+    "fall_time": 0.082,
+    "peak_to_mean_ratio": 1.1101,
+    "motion_before_peak": 0.252596,
+    "motion_after_peak": 0.227553,
+    "motion_signal": [
+      0.252596,
+      0.227127,
+      0.202935
+    ],
+    "time_signal": [
+      13.7,
+      13.7333,
+      13.7667
+    ]
+  },
+  {
+    "ref_idx": 18,
+    "ref_time": 14.082,
+    "peak_time": 14.1333,
+    "peak_motion": 0.358995,
+    "offset_from_ref": 0.0513,
+    "window_mean": 0.319199,
+    "window_std": 0.028701,
+    "window_max": 0.358995,
+    "window_min": 0.292387,
+    "rise_time": 0.0713,
+    "fall_time": 0.0287,
+    "peak_to_mean_ratio": 1.1247,
+    "motion_before_peak": 0.319199,
+    "motion_after_peak": 0.358995,
+    "motion_signal": [
+      0.292387,
+      0.306215,
+      0.358995
+    ],
+    "time_signal": [
+      14.0667,
+      14.1,
+      14.1333
+    ]
+  },
+  {
+    "ref_idx": 19,
+    "ref_time": 14.912,
+    "peak_time": 14.9667,
+    "peak_motion": 0.413991,
+    "offset_from_ref": 0.0547,
+    "window_mean": 0.395875,
+    "window_std": 0.014031,
+    "window_max": 0.413991,
+    "window_min": 0.379807,
+    "rise_time": 0.0747,
+    "fall_time": 0.0253,
+    "peak_to_mean_ratio": 1.0458,
+    "motion_before_peak": 0.395875,
+    "motion_after_peak": 0.413991,
+    "motion_signal": [
+      0.379807,
+      0.393826,
+      0.413991
+    ],
+    "time_signal": [
+      14.9,
+      14.9333,
+      14.9667
+    ]
+  },
+  {
+    "ref_idx": 20,
+    "ref_time": 15.232,
+    "peak_time": 15.2333,
+    "peak_motion": 0.812005,
+    "offset_from_ref": 0.0013,
+    "window_mean": 0.784792,
+    "window_std": 0.019542,
+    "window_max": 0.812005,
+    "window_min": 0.767015,
+    "rise_time": 0.0213,
+    "fall_time": 0.0787,
+    "peak_to_mean_ratio": 1.0347,
+    "motion_before_peak": 0.812005,
+    "motion_after_peak": 0.784792,
+    "motion_signal": [
+      0.812005,
+      0.767015,
+      0.775356
+    ],
+    "time_signal": [
+      15.2333,
+      15.2667,
+      15.3
+    ]
+  },
+  {
+    "ref_idx": 21,
+    "ref_time": 16.792,
+    "peak_time": 16.8667,
+    "peak_motion": 0.278742,
+    "offset_from_ref": 0.0747,
+    "window_mean": 0.273979,
+    "window_std": 0.003659,
+    "window_max": 0.278742,
+    "window_min": 0.269847,
+    "rise_time": 0.0947,
+    "fall_time": 0.0053,
+    "peak_to_mean_ratio": 1.0174,
+    "motion_before_peak": 0.273979,
+    "motion_after_peak": 0.278742,
+    "motion_signal": [
+      0.269847,
+      0.273348,
+      0.278742
+    ],
+    "time_signal": [
+      16.8,
+      16.8333,
+      16.8667
+    ]
+  },
+  {
+    "ref_idx": 22,
+    "ref_time": 17.072,
+    "peak_time": 17.1333,
+    "peak_motion": 0.435912,
+    "offset_from_ref": 0.0613,
+    "window_mean": 0.362557,
+    "window_std": 0.056791,
+    "window_max": 0.435912,
+    "window_min": 0.297557,
+    "rise_time": 0.0813,
+    "fall_time": 0.0187,
+    "peak_to_mean_ratio": 1.2023,
+    "motion_before_peak": 0.362557,
+    "motion_after_peak": 0.435912,
+    "motion_signal": [
+      0.297557,
+      0.354203,
+      0.435912
+    ],
+    "time_signal": [
+      17.0667,
+      17.1,
+      17.1333
+    ]
+  },
+  {
+    "ref_idx": 23,
+    "ref_time": 17.572,
+    "peak_time": 17.5667,
+    "peak_motion": 0.252019,
+    "offset_from_ref": -0.0053,
+    "window_mean": 0.249197,
+    "window_std": 0.002436,
+    "window_max": 0.252019,
+    "window_min": 0.246074,
+    "rise_time": 0.0147,
+    "fall_time": 0.0853,
+    "peak_to_mean_ratio": 1.0113,
+    "motion_before_peak": 0.252019,
+    "motion_after_peak": 0.249197,
+    "motion_signal": [
+      0.252019,
+      0.249497,
+      0.246074
+    ],
+    "time_signal": [
+      17.5667,
+      17.6,
+      17.6333
+    ]
+  },
+  {
+    "ref_idx": 24,
+    "ref_time": 17.852,
+    "peak_time": 17.9,
+    "peak_motion": 0.27422,
+    "offset_from_ref": 0.048,
+    "window_mean": 0.252552,
+    "window_std": 0.015333,
+    "window_max": 0.27422,
+    "window_min": 0.241009,
+    "rise_time": 0.068,
+    "fall_time": 0.032,
+    "peak_to_mean_ratio": 1.0858,
+    "motion_before_peak": 0.252552,
+    "motion_after_peak": 0.27422,
+    "motion_signal": [
+      0.241009,
+      0.242427,
+      0.27422
+    ],
+    "time_signal": [
+      17.8333,
+      17.8667,
+      17.9
+    ]
+  },
+  {
+    "ref_idx": 25,
+    "ref_time": 18.062,
+    "peak_time": 18.1,
+    "peak_motion": 0.347295,
+    "offset_from_ref": 0.038,
+    "window_mean": 0.336983,
+    "window_std": 0.013948,
+    "window_max": 0.347295,
+    "window_min": 0.317264,
+    "rise_time": 0.058,
+    "fall_time": 0.042,
+    "peak_to_mean_ratio": 1.0306,
+    "motion_before_peak": 0.346842,
+    "motion_after_peak": 0.332279,
+    "motion_signal": [
+      0.346389,
+      0.347295,
+      0.317264
+    ],
+    "time_signal": [
+      18.0667,
+      18.1,
+      18.1333
+    ]
+  },
+  {
+    "ref_idx": 26,
+    "ref_time": 18.472,
+    "peak_time": 18.5333,
+    "peak_motion": 0.331821,
+    "offset_from_ref": 0.0613,
+    "window_mean": 0.318691,
+    "window_std": 0.01168,
+    "window_max": 0.331821,
+    "window_min": 0.303446,
+    "rise_time": 0.0813,
+    "fall_time": 0.0187,
+    "peak_to_mean_ratio": 1.0412,
+    "motion_before_peak": 0.318691,
+    "motion_after_peak": 0.331821,
+    "motion_signal": [
+      0.303446,
+      0.320807,
+      0.331821
+    ],
+    "time_signal": [
+      18.4667,
+      18.5,
+      18.5333
+    ]
+  },
+  {
+    "ref_idx": 27,
+    "ref_time": 18.702,
+    "peak_time": 18.7333,
+    "peak_motion": 0.416186,
+    "offset_from_ref": 0.0313,
+    "window_mean": 0.406274,
+    "window_std": 0.013815,
+    "window_max": 0.416186,
+    "window_min": 0.386738,
+    "rise_time": 0.0513,
+    "fall_time": 0.0487,
+    "peak_to_mean_ratio": 1.0244,
+    "motion_before_peak": 0.416042,
+    "motion_after_peak": 0.401462,
+    "motion_signal": [
+      0.415898,
+      0.416186,
+      0.386738
+    ],
+    "time_signal": [
+      18.7,
+      18.7333,
+      18.7667
+    ]
+  },
+  {
+    "ref_idx": 28,
+    "ref_time": 19.112,
+    "peak_time": 19.1667,
+    "peak_motion": 0.306903,
+    "offset_from_ref": 0.0547,
+    "window_mean": 0.260827,
+    "window_std": 0.034265,
+    "window_max": 0.306903,
+    "window_min": 0.224795,
+    "rise_time": 0.0747,
+    "fall_time": 0.0253,
+    "peak_to_mean_ratio": 1.1767,
+    "motion_before_peak": 0.260827,
+    "motion_after_peak": 0.306903,
+    "motion_signal": [
+      0.224795,
+      0.250784,
+      0.306903
+    ],
+    "time_signal": [
+      19.1,
+      19.1333,
+      19.1667
+    ]
+  },
+  {
+    "ref_idx": 29,
+    "ref_time": 19.672,
+    "peak_time": 19.7333,
+    "peak_motion": 0.356435,
+    "offset_from_ref": 0.0613,
+    "window_mean": 0.340131,
+    "window_std": 0.012171,
+    "window_max": 0.356435,
+    "window_min": 0.3272,
+    "rise_time": 0.0813,
+    "fall_time": 0.0187,
+    "peak_to_mean_ratio": 1.0479,
+    "motion_before_peak": 0.340131,
+    "motion_after_peak": 0.356435,
+    "motion_signal": [
+      0.3272,
+      0.336758,
+      0.356435
+    ],
+    "time_signal": [
+      19.6667,
+      19.7,
+      19.7333
+    ]
+  }
+]

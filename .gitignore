@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Temporary files
+tmp/
+*.tmp
+*.log
+
+# Output files (optional - uncomment if you don't want to track outputs)
+# outputs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Video files (large, optional - uncomment if you don't want to track videos)
+# *.mp4
+# *.webm
+
+# Audio files (optional)
+# *.wav
+# *.sfk
+
+# Image files in tmp (large)
+tmp/**/*.png
