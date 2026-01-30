@@ -37,26 +37,24 @@ def bandpass(data, sr, low=400, high=6000):
 
 def compute_spectral_flux(stft_mag, power=1.0, freq_mask=None, log_mag=True):
     """
-    Compute spectral flux: measure of spectral change between consecutive frames.
+    Compute spectral flux: measure of spectral change between consecutive frames (vectorized).
     Higher flux indicates onset/transient events like gunshots.
     
     Args:
         stft_mag: Magnitude spectrogram (freq_bins x time_frames)
         power: Power for flux calculation (2.0 = energy, 1.0 = magnitude)
-        freq_mask: Optional 1D boolean mask (length = freq_bins); if set, flux only from these bins (e.g. 1k-6kHz).
+        freq_mask: Optional 1D boolean mask (length = freq_bins); if set, flux only from these bins.
     
     Returns:
-        flux: Spectral flux per time frame
+        flux: length (n_frames - 1), flux[t] = change from frame t to t+1
     """
-    mag = stft_mag
+    mag = np.asarray(stft_mag, dtype=np.float64)
     if log_mag:
         mag = np.log1p(mag)
     if freq_mask is not None:
         mag = np.where(freq_mask[:, np.newaxis], mag, 0.0)
-    flux = np.zeros(stft_mag.shape[1] - 1)
-    for t in range(1, stft_mag.shape[1]):
-        diff = mag[:, t] - mag[:, t-1]
-        flux[t-1] = np.sum(np.maximum(diff, 0))
+    diff = mag[:, 1:] - mag[:, :-1]
+    flux = np.sum(np.maximum(diff, 0), axis=0)
     return flux
 
 
@@ -248,6 +246,44 @@ def adaptive_threshold_mad(signal, window_sec=2.0, k=6.0, sr=None):
     return threshold
 
 
+def adaptive_threshold_multi_scale(signal, sr, short_window=0.5, long_window=3.0, k_short=4.0, k_long=2.5):
+    """
+    Multi-scale adaptive threshold: step + interp (O(n)) like adaptive_threshold_mad.
+    Short window catches transients; long window adapts to background noise.
+    Returns per-sample (or per-frame) threshold: max(short_thresh, long_thresh).
+    """
+    n = len(signal)
+    if n == 0:
+        return np.array([])
+    signal = np.asarray(signal, dtype=np.float64)
+    short_win = max(10, min(int(sr * short_window), n // 4))
+    long_win = max(short_win, min(int(sr * long_window), n // 2))
+    step = max(1, long_win // 4)
+    indices = []
+    short_pts = []
+    long_pts = []
+    for i in range(0, n, step):
+        start_s = max(0, i - short_win // 2)
+        end_s = min(n, i + short_win // 2)
+        win_s = signal[start_s:end_s]
+        med_s = np.median(win_s)
+        mad_s = np.median(np.abs(win_s - med_s)) + 1e-12
+        short_pts.append(med_s + k_short * mad_s * 1.4826)
+        start_l = max(0, i - long_win // 2)
+        end_l = min(n, i + long_win // 2)
+        win_l = signal[start_l:end_l]
+        med_l = np.median(win_l)
+        mad_l = np.median(np.abs(win_l - med_l)) + 1e-12
+        long_pts.append(med_l + k_long * mad_l * 1.4826)
+        indices.append(i)
+    if len(indices) == 1:
+        thresh = max(short_pts[0], long_pts[0])
+        return np.full(n, thresh)
+    short_thresh = np.interp(np.arange(n), indices, short_pts)
+    long_thresh = np.interp(np.arange(n), indices, long_pts)
+    return np.maximum(short_thresh, long_thresh)
+
+
 # Scene presets for score_weights [onset, r1, flatness, attack, r2_penalty]
 SCENE_WEIGHTS = {
     "default": [0.26, 0.34, 0.15, 0.15, 0.10],
@@ -295,6 +331,20 @@ def cluster_peaks_by_time(peak_times, cluster_window_sec=0.25):
         clusters.append(current_cluster)
     
     return clusters
+
+
+def dynamic_cluster_window(detected_times, min_window=0.08, max_window=0.30):
+    """
+    Dynamic cluster window from OPTIMIZATION_GUIDE / shot_audio_improved.
+    Fast bursts use smaller window, slower shots use larger window.
+    """
+    if len(detected_times) < 3:
+        return min_window
+    times = np.array(detected_times, dtype=np.float64)
+    intervals = np.diff(np.sort(times))
+    median_interval = float(np.median(intervals))
+    window = float(np.clip(median_interval * 0.4, min_window, max_window))
+    return window
 
 
 def detect_shots(
@@ -345,20 +395,22 @@ def detect_shots(
         # Get improved method parameters from calibration
         cal = load_calibrated_params() if use_calibrated else {}
         cluster_window = cal.get("cluster_window_sec", 0.25)
+        use_dynamic_cluster = cal.get("use_dynamic_cluster", False)
+        use_multi_scale_threshold = cal.get("use_multi_scale_threshold", False)
         mad_k = cal.get("mad_k", 7.0)  # Increased from 6.0 to reduce false positives
         candidate_min_dist_ms = cal.get("candidate_min_dist_ms", 80)  # Increased from 50ms
         score_weights = cal.get("score_weights", None)  # [onset, r1, flatness, attack, r2_penalty]
         min_score_threshold = cal.get("min_score_threshold", None)
         logreg_model = cal.get("logreg_model", None)
         scene_config = cal.get("scene_config", None)  # indoor/outdoor/near/far
-        if logreg_model is not None:
-            # When LR is active, don't gate by global threshold
-            min_score_threshold = None
+        # min_score_threshold is used as min_confidence filter on final shots; keep from cal even when LR is present
         
         return detect_shots_improved(
             data, sr, fps,
             threshold_percentile=threshold_percentile,
             cluster_window_sec=cluster_window,
+            use_dynamic_cluster=use_dynamic_cluster,
+            use_multi_scale_threshold=use_multi_scale_threshold,
             export_diagnostics=export_diagnostics,
             audio_path=audio_path,
             mad_k=mad_k,
@@ -516,6 +568,8 @@ def detect_shots_improved(
     data, sr, fps,
     threshold_percentile=None,
     cluster_window_sec=0.25,
+    use_dynamic_cluster=False,
+    use_multi_scale_threshold=False,
     export_diagnostics=False,
     audio_path=None,
     mad_k=6.0,
@@ -534,6 +588,7 @@ def detect_shots_improved(
     Stage 2: Multi-feature verification, robust+sigmoid confidence, hard-negative filtering.
     
     Args:
+        use_dynamic_cluster: If True, set cluster_window from median inter-candidate interval.
         mad_k: MAD threshold multiplier (higher = stricter).
         candidate_min_dist_ms: Minimum distance between candidate peaks (ms).
         score_weights: [onset, r1, flatness, attack, r2_penalty] or None to use scene_config.
@@ -542,68 +597,89 @@ def detect_shots_improved(
         logreg_model: Optional logistic regression model dict (weights/bias/mean/std).
         return_candidates: If True, return (shots, candidate_features).
     """
-    # STFT parameters
+    # STFT parameters; n_frames is the single source of truth for frame axis
     hop_length = 256  # ~5.3ms at 48kHz
     n_fft = 1024      # ~21ms at 48kHz
-    
-    # ========== STAGE 1: Candidate Detection (High Recall) ==========
-    
-    # Compute onset strength (spectral flux) in 1k-6kHz band only (gunshot crack)
-    onset = compute_onset_strength(
-        data, sr, hop_length=hop_length, n_fft=n_fft, band_low_hz=1000, band_high_hz=6000
-    )
-    
-    # Smooth onset in frame domain (10ms ~= 2 frames at 48k/256 hop)
-    hop_samples = hop_length
-    n_frames = len(onset)
-    smooth_onset_win = max(1, int((sr * 0.01) / hop_samples))
-    onset_smooth = np.convolve(onset, np.ones(smooth_onset_win) / smooth_onset_win, mode="same")
-    
-    # Adaptive threshold using sliding window + MAD (frame-domain)
-    if threshold_percentile is not None:
-        threshold_onset = np.percentile(onset_smooth, threshold_percentile)
-        threshold_onset_arr = np.full(len(onset_smooth), threshold_onset)
-    else:
-        sr_frames = sr / hop_samples
-        threshold_onset_arr = adaptive_threshold_mad(onset_smooth, window_sec=2.0, k=mad_k, sr=sr_frames)
-    
-    # Find candidate peaks in onset (frame-domain), then filter by per-frame threshold
-    min_dist_frames = max(1, int((sr * candidate_min_dist_ms / 1000.0) / hop_samples))
-    candidate_peaks, _ = find_peaks(
-        onset_smooth,
-        distance=min_dist_frames,
-    )
-    if len(candidate_peaks) > 0:
-        candidate_peaks = np.array(
-            [p for p in candidate_peaks if onset_smooth[p] >= threshold_onset_arr[p]],
-            dtype=int
-        )
-    if len(candidate_peaks) == 0:
-        if return_feature_context:
-            return ([], [], {})
-        return ([], []) if return_candidates else []
-    
-    # ========== STAGE 2: Feature Extraction & Scoring ==========
-    
-    # Compute STFT once and reuse for all features (performance optimization)
-    window = np.hanning(n_fft)
     hop_samples = hop_length
     n_frames = max(1, (len(data) - n_fft) // hop_samples + 1)
-    stft_mag = np.zeros((n_fft // 2 + 1, n_frames))
-    freqs = np.fft.rfftfreq(n_fft, 1.0/sr)
     
-    # Compute STFT
+    # ========== Single STFT (compute once, reuse for onset + all features) ==========
+    window = np.hanning(n_fft)
+    stft_mag = np.zeros((n_fft // 2 + 1, n_frames))
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
     for i in range(n_frames):
         start = i * hop_samples
         end = start + n_fft
         if end > len(data):
             frame = np.zeros(n_fft)
-            frame[:len(data)-start] = data[start:]
-            frame[:len(data)-start] *= window[:len(data)-start]
+            frame[: len(data) - start] = data[start:]
+            frame[: len(data) - start] *= window[: len(data) - start]
         else:
             frame = data[start:end] * window
         fft = np.fft.rfft(frame)
         stft_mag[:, i] = np.abs(fft)
+    
+    # Onset = spectral flux in 1k-6kHz band, aligned to n_frames (frame axis unified)
+    freq_mask_1k_6k = (freqs >= 1000) & (freqs <= 6000)
+    flux = compute_spectral_flux(stft_mag, power=1.0, freq_mask=freq_mask_1k_6k, log_mag=True)
+    onset = np.zeros(n_frames, dtype=np.float64)
+    onset[1:] = flux[:]
+    
+    # Smooth onset (10ms ~= 2 frames at 48k/256 hop)
+    smooth_onset_win = max(1, int((sr * 0.01) / hop_samples))
+    onset_smooth = np.convolve(onset, np.ones(smooth_onset_win) / smooth_onset_win, mode="same")
+    
+    # ========== STAGE 1: Candidate Detection (High Recall) ==========
+    if threshold_percentile is not None:
+        threshold_onset = np.percentile(onset_smooth, threshold_percentile)
+        threshold_onset_arr = np.full(n_frames, threshold_onset)
+    elif use_multi_scale_threshold:
+        sr_frames = sr / hop_samples
+        threshold_onset_arr = adaptive_threshold_multi_scale(
+            onset_smooth, sr_frames, short_window=0.5, long_window=3.0, k_short=4.0, k_long=2.5
+        )
+    else:
+        sr_frames = sr / hop_samples
+        threshold_onset_arr = adaptive_threshold_mad(onset_smooth, window_sec=2.0, k=mad_k, sr=sr_frames)
+    
+    min_dist_frames = max(1, int((sr * candidate_min_dist_ms / 1000.0) / hop_samples))
+    candidate_peaks, _ = find_peaks(onset_smooth, distance=min_dist_frames)
+    if len(candidate_peaks) > 0:
+        candidate_peaks = np.array(
+            [p for p in candidate_peaks if p < n_frames and onset_smooth[p] >= threshold_onset_arr[p]],
+            dtype=int
+        )
+    
+    # Second-shot recovery: AGC/compression often lowers the next shot; search with relaxed threshold
+    recovery_ratio = 0.50
+    recovery_start_frames = max(1, int((sr * 0.04) / hop_samples))
+    recovery_end_frames = min(n_frames - 1, int((sr * 0.20) / hop_samples))
+    existing_set = set(int(p) for p in candidate_peaks)
+    for p in np.sort(candidate_peaks):
+        start_f = min(n_frames - 1, p + recovery_start_frames)
+        end_f = min(n_frames - 1, p + recovery_end_frames)
+        if start_f >= end_f:
+            continue
+        for f in range(start_f, end_f + 1):
+            if f in existing_set:
+                continue
+            if onset_smooth[f] < recovery_ratio * threshold_onset_arr[f]:
+                continue
+            if (f > 0 and onset_smooth[f] < onset_smooth[f - 1]) or (f < n_frames - 1 and onset_smooth[f] < onset_smooth[f + 1]):
+                continue
+            too_near_other = any(abs(f - p2) < min_dist_frames for p2 in existing_set if p2 != p)
+            if too_near_other:
+                continue
+            existing_set.add(f)
+            candidate_peaks = np.append(candidate_peaks, f)
+    candidate_peaks = np.unique(candidate_peaks).astype(int)
+    
+    if len(candidate_peaks) == 0:
+        if return_feature_context:
+            return ([], [], {})
+        return ([], []) if return_candidates else []
+    
+    # ========== STAGE 2: Feature Extraction & Scoring (same n_frames / stft_mag) ==========
     
     # Extract multi-band energy from STFT
     low_idx = (freqs >= 50) & (freqs < 300)
@@ -796,10 +872,17 @@ def detect_shots_improved(
     def _sigmoid(x):
         return 1.0 / (1.0 + np.exp(-x))
     
-    # ========== Clustering & Selection ==========
+    # Normalized absolute score per candidate (0–1) for product-friendly confidence
+    scores_arr = np.array(candidate_scores, dtype=np.float64)
+    med_s = np.median(scores_arr)
+    mad_s = np.median(np.abs(scores_arr - med_s)) + 1e-9
+    z = (scores_arr - med_s) / (mad_s * 1.4826 + 1e-9)
+    score_norm = 1.0 / (1.0 + np.exp(-np.clip(z, -5, 5)))
     
-    # Cluster candidates by time (replace hard distance)
+    # ========== Clustering & Selection ==========
     candidate_times = [f["t"] for f in candidate_features]
+    if use_dynamic_cluster and len(candidate_times) >= 3:
+        cluster_window_sec = dynamic_cluster_window(candidate_times, min_window=0.08, max_window=0.30)
     clusters = cluster_peaks_by_time(candidate_times, cluster_window_sec=cluster_window_sec)
     
     shots = []
@@ -807,14 +890,15 @@ def detect_shots_improved(
         if len(cluster) == 0:
             continue
         
-        # Select best candidate in cluster (highest score)
         cluster_raw_scores = [candidate_scores[i] for i in cluster]
-        best_idx_in_cluster = cluster[np.argmax(cluster_raw_scores)]
+        best_local = np.argmax(cluster_raw_scores)
+        best_idx_in_cluster = cluster[best_local]
         best_candidate = candidate_features[best_idx_in_cluster]
         
-        # Cluster-relative confidence (margin vs median)
-        margin = cluster_raw_scores[np.argmax(cluster_raw_scores)] - np.median(cluster_raw_scores)
-        confidence = float(_sigmoid(margin / 0.15))
+        margin = cluster_raw_scores[best_local] - np.median(cluster_raw_scores)
+        confidence_margin = float(_sigmoid(margin / 0.15))
+        confidence_absolute = float(score_norm[best_idx_in_cluster])
+        confidence = 0.5 * confidence_absolute + 0.5 * confidence_margin
         
         shots.append({
             "t": round(float(best_candidate["t"]), 4),
@@ -855,20 +939,22 @@ def detect_shots_improved(
     
     # Export diagnostics if requested
     if export_diagnostics and audio_path:
-        # Optional: quick FP dump (low-confidence survivors)
         print("FP candidates (confidence < 0.5):")
         for s in shots:
             if s["confidence"] < 0.5:
                 print(s)
-        # Convert candidate scores to per-sample array for visualization
         scores_per_sample = np.zeros(len(data))
         for i, feat in enumerate(candidate_features):
             idx = int(feat["peak_idx"] * hop_length)
             if 0 <= idx < len(scores_per_sample):
                 scores_per_sample[idx] = candidate_scores[i]
-        
+        flux_for_plot = np.interp(
+            np.arange(len(data)),
+            np.linspace(0, len(data) - 1, num=max(1, onset_smooth.shape[0])),
+            onset_smooth
+        )
         export_diagnostic_curves(
-            audio_path, data, sr, envelope, onset_smooth, 
+            audio_path, data, sr, envelope, flux_for_plot,
             scores_per_sample, shots, hop_length
         )
     

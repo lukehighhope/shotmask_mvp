@@ -175,20 +175,30 @@ def extract_audio(video, ffmpeg):
     return audio
 
 
-def cross_validate_shots(audio_shots, motion_shots, max_diff_s=0.15):
+def cross_validate_shots(audio_shots, motion_shots, max_diff_s=0.15, adaptive_window=True, use_confidence=True):
     """
     Cross-validate audio-detected shots with motion-detected shots.
+    If adaptive_window=True, set max_diff_s from median inter-shot interval (OPTIMIZATION_GUIDE).
+    use_confidence: include combined confidence in returned matched pairs.
     Returns matched pairs and unmatched shots.
     """
     audio_times = [s["t"] for s in audio_shots]
     motion_times = [s["t"] for s in motion_shots]
     
+    if adaptive_window and (len(audio_times) + len(motion_times)) > 1:
+        all_times = sorted([float(t) for t in audio_times] + [float(t) for t in motion_times])
+        intervals = [all_times[i + 1] - all_times[i] for i in range(len(all_times) - 1)]
+        if intervals:
+            import numpy as np
+            median_interval = float(np.median(intervals))
+            max_diff_s = min(0.15, max(0.04, median_interval * 0.5))
+    
     matched_audio = []
     matched_motion = []
+    matched_confidence = []  # (audio_conf + motion_conf) / 2 when use_confidence
     unmatched_audio = []
     unmatched_motion = []
     
-    # Match audio shots to motion shots
     used_motion = set()
     for i, a_t in enumerate(audio_times):
         best_j = None
@@ -204,20 +214,27 @@ def cross_validate_shots(audio_shots, motion_shots, max_diff_s=0.15):
             matched_audio.append(i)
             matched_motion.append(best_j)
             used_motion.add(best_j)
+            if use_confidence:
+                a_conf = audio_shots[i].get("confidence", 0.5)
+                m_conf = motion_shots[best_j].get("confidence", 0.5)
+                matched_confidence.append(round((a_conf + m_conf) / 2.0, 3))
         else:
             unmatched_audio.append(i)
     
-    # Find unmatched motion shots
     for j in range(len(motion_times)):
         if j not in used_motion:
             unmatched_motion.append(j)
     
-    return {
+    result = {
         "matched_audio": matched_audio,
         "matched_motion": matched_motion,
         "unmatched_audio": unmatched_audio,
         "unmatched_motion": unmatched_motion,
+        "max_diff_s": max_diff_s,
     }
+    if use_confidence and matched_confidence:
+        result["matched_confidence"] = matched_confidence
+    return result
 
 def main(video, mode="all"):
     ffmpeg = get_ffmpeg_cmd()
@@ -322,6 +339,13 @@ def main(video, mode="all"):
     else:
         shots_audio, audio_candidates = shots_audio_result, []
     
+    # Shots all happen after beep: drop any detection before beep (video start noise)
+    if beeps and len(shots_audio) > 0:
+        t0_beep = float(beeps[0]["t"])
+        shots_audio = [s for s in shots_audio if s["t"] >= t0_beep]
+        if audio_candidates:
+            audio_candidates = [c for c in audio_candidates if c.get("t", 0) >= t0_beep]
+    
     # Video motion detection for cross-validation (improved with ref-guided learning)
     print("\n" + "=" * 50)
     print("Detecting shots from video motion (cross-validation)")
@@ -341,13 +365,14 @@ def main(video, mode="all"):
     
     print(f"Motion detection: {len(shots_motion)} shots detected")
     
-    # Cross-validate
-    validation = cross_validate_shots(shots_audio, shots_motion, max_diff_s=0.15)
+    # Cross-validate (adaptive max_diff_s from median inter-shot interval)
+    validation = cross_validate_shots(shots_audio, shots_motion, max_diff_s=0.15, adaptive_window=True, use_confidence=True)
     n_matched = len(validation["matched_audio"])
     n_audio_only = len(validation["unmatched_audio"])
     n_motion_only = len(validation["unmatched_motion"])
+    max_diff_used = validation.get("max_diff_s", 0.15)
     
-    print(f"\nCross-validation (max_diff=0.15s):")
+    print(f"\nCross-validation (max_diff={max_diff_used:.3f}s, adaptive):")
     print(f"  Matched: {n_matched}/{len(shots_audio)} audio shots have motion confirmation")
     print(f"  Audio-only (no motion): {n_audio_only}")
     print(f"  Motion-only (no audio): {n_motion_only}")

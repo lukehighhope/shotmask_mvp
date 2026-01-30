@@ -1,6 +1,7 @@
 """
 Detect gunshots from video motion (recoil/jerk when firing).
 Uses optical flow or frame difference to detect sudden movements.
+Improvements from OPTIMIZATION_GUIDE: motion heatmap ROI, multi-frame diff, Farneback flow, direction filter.
 """
 import cv2
 import numpy as np
@@ -9,7 +10,106 @@ import json
 import os
 
 
-def detect_shots_from_motion(video_path, fps, method="flow", roi=None, min_motion=0.3):
+def compute_motion_heatmap(video_path, sample_frames=30):
+    """
+    Compute motion heatmap to auto-locate ROI (gun area).
+    Returns (roi_x, roi_y, roi_w, roi_h, heatmap) or None.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    heatmap = np.zeros((height, width), dtype=np.float64)
+    ret, prev_frame = cap.read()
+    if not ret:
+        cap.release()
+        return None
+    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    prev_gray = cv2.GaussianBlur(prev_gray, (5, 5), 0)
+    frame_count = 0
+    while frame_count < sample_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        diff = cv2.absdiff(prev_gray, gray)
+        heatmap += diff.astype(np.float64)
+        prev_gray = gray
+        frame_count += 1
+    cap.release()
+    if frame_count == 0:
+        return None
+    heatmap = heatmap / frame_count
+    heatmap = (heatmap / heatmap.max() * 255).astype(np.uint8) if heatmap.max() > 0 else heatmap.astype(np.uint8)
+    heatmap = cv2.GaussianBlur(heatmap, (15, 15), 0)
+    threshold = np.percentile(heatmap, 90)
+    mask = (heatmap >= threshold).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        roi_w, roi_h = int(width * 0.5), int(height * 0.5)
+        roi_x, roi_y = (width - roi_w) // 2, (height - roi_h) // 2
+    else:
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        margin = 0.2
+        roi_x = max(0, int(x - w * margin))
+        roi_y = max(0, int(y - h * margin))
+        roi_w = min(width - roi_x, int(w * (1 + 2 * margin)))
+        roi_h = min(height - roi_y, int(h * (1 + 2 * margin)))
+    return (roi_x, roi_y, roi_w, roi_h, heatmap)
+
+
+def compute_multi_frame_diff(frames_buffer, weights=None):
+    """
+    Multi-frame diff: weighted sum of current vs previous frames (OPTIMIZATION_GUIDE).
+    frames_buffer: list of grayscale ROI frames, newest last.
+    """
+    if len(frames_buffer) < 2:
+        return 0.0
+    current_frame = frames_buffer[-1]
+    n_prev = len(frames_buffer) - 1
+    if weights is None:
+        weights = np.linspace(0.3, 1.0, n_prev)
+        weights = weights / weights.sum()
+    total_diff = 0.0
+    for i in range(n_prev):
+        diff = cv2.absdiff(current_frame, frames_buffer[i])
+        total_diff += np.sum(diff) * weights[i]
+    return total_diff
+
+
+def analyze_motion_direction(prev_gray, curr_gray, method="farneback"):
+    """
+    Motion magnitude and dominant direction (OPTIMIZATION_GUIDE).
+    Returns (magnitude, dominant_direction_deg). Direction: 0=right, 90=up, 180=left, 270=down.
+    """
+    if method == "farneback":
+        flow = cv2.calcOpticalFlowFarneback(
+            prev_gray, curr_gray, None,
+            pyr_scale=0.5, levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2, flags=0
+        )
+        magnitude = np.sqrt(flow[..., 0]**2 + flow[..., 1]**2)
+        angle = np.arctan2(flow[..., 1], flow[..., 0]) * 180 / np.pi
+        mag_flat = magnitude.flatten()
+        angle_flat = angle.flatten()
+        threshold = np.percentile(mag_flat, 75)
+        mask = mag_flat > threshold
+        if np.sum(mask) > 0:
+            dominant_direction = float(np.median(angle_flat[mask]))
+            avg_magnitude = float(np.mean(mag_flat[mask]))
+        else:
+            dominant_direction = 0.0
+            avg_magnitude = 0.0
+        return avg_magnitude, dominant_direction
+    diff = cv2.absdiff(prev_gray, curr_gray)
+    return float(np.mean(diff)), 0.0
+
+
+def detect_shots_from_motion(video_path, fps, method="flow", roi=None, min_motion=0.3, multi_frame_window=1, filter_direction=False):
     """
     Detect gunshot times from video motion (recoil).
     
@@ -49,9 +149,24 @@ def detect_shots_from_motion(video_path, fps, method="flow", roi=None, min_motio
     prev_gray = cv2.GaussianBlur(prev_gray, (5, 5), 0)
     
     motion_scores = []
+    motion_directions = []  # for flow/farneback when filter_direction
     frame_idx = 0
+    frames_buffer = [prev_gray] if multi_frame_window > 1 else None
     
-    if method == "flow":
+    if method == "farneback":
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            gray = cv2.cvtColor(frame[y:y+h, x:x+w], cv2.COLOR_BGR2GRAY)
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            mag, direction = analyze_motion_direction(prev_gray, gray, method="farneback")
+            motion_scores.append(mag)
+            motion_directions.append(direction)
+            prev_gray = gray
+            frame_idx += 1
+    
+    elif method == "flow":
         # Optical flow method: tracks pixel movement between frames
         lk_params = dict(
             winSize=(15, 15),
@@ -84,15 +199,21 @@ def detect_shots_from_motion(video_path, fps, method="flow", roi=None, min_motio
                     flow = good_new - good_old
                     # Motion magnitude
                     magnitudes = np.sqrt(flow[:, 0]**2 + flow[:, 1]**2)
-                    # Use median or 75th percentile to avoid outliers
                     motion = float(np.percentile(magnitudes, 75))
+                    if filter_direction:
+                        angles = np.arctan2(flow[:, 1], flow[:, 0]) * 180 / np.pi
+                        motion_directions.append(float(np.median(angles)))
+                    else:
+                        motion_directions.append(0.0)
                 else:
                     motion = 0.0
+                    motion_directions.append(0.0)
                 
                 # Update corners for next frame
                 corners = cv2.goodFeaturesToTrack(gray, maxCorners=100, qualityLevel=0.01, minDistance=10)
             else:
                 motion = 0.0
+                motion_directions.append(0.0)
                 corners = cv2.goodFeaturesToTrack(gray, maxCorners=100, qualityLevel=0.01, minDistance=10)
             
             motion_scores.append(motion)
@@ -100,21 +221,24 @@ def detect_shots_from_motion(video_path, fps, method="flow", roi=None, min_motio
             frame_idx += 1
     
     elif method == "diff":
-        # Frame difference method: simpler, faster
+        # Frame difference; optional multi-frame weighted diff
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            
             gray = cv2.cvtColor(frame[y:y+h, x:x+w], cv2.COLOR_BGR2GRAY)
             gray = cv2.GaussianBlur(gray, (5, 5), 0)
-            
-            # Frame difference
-            diff = cv2.absdiff(prev_gray, gray)
-            # Sum of absolute differences (normalized)
-            motion = float(np.sum(diff)) / (w * h * 255.0)
-            
+            if frames_buffer is not None and multi_frame_window > 1:
+                frames_buffer.append(gray)
+                if len(frames_buffer) > multi_frame_window:
+                    frames_buffer.pop(0)
+                motion = compute_multi_frame_diff(frames_buffer)
+                motion = motion / (w * h * 255.0 * max(1, len(frames_buffer) - 1))
+            else:
+                diff = cv2.absdiff(prev_gray, gray)
+                motion = float(np.sum(diff)) / (w * h * 255.0)
             motion_scores.append(motion)
+            motion_directions.append(0.0)
             prev_gray = gray
             frame_idx += 1
     
@@ -150,6 +274,14 @@ def detect_shots_from_motion(video_path, fps, method="flow", roi=None, min_motio
         distance=min_dist_samples,
         prominence=0.1 * (motion_smooth.max() - baseline),
     )
+    
+    # Optional: filter by recoil direction (up ~-90° or back ~180°)
+    if filter_direction and method in ("flow", "farneback") and len(motion_directions) == len(motion_smooth):
+        dir_arr = np.array(motion_directions)
+        def is_recoil_dir(d):
+            return (-135 <= d <= -45) or (135 <= d <= 180) or (-180 <= d <= -135)
+        valid = np.array([is_recoil_dir(dir_arr[p]) for p in peaks])
+        peaks = peaks[valid]
     
     shots = []
     if len(peaks) > 0:
@@ -437,67 +569,55 @@ def detect_shots_from_motion_improved(video_path, fps, ref_shot_times=None, meth
     return ref_guided_shots
 
 
-def detect_shots_from_motion_roi_auto(video_path, fps, method="diff"):
+def detect_shots_from_motion_roi_auto(video_path, fps, method="diff", multi_frame_window=1, filter_direction=False):
     """
-    Auto-detect ROI by finding area with most motion in first few seconds.
-    Then detect shots using that ROI.
+    Auto-detect ROI: try motion heatmap (contour-based) first, else center-weighted search.
+    Then detect shots using that ROI. Supports multi_frame_window and direction filter.
     """
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return []
-    
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    # Sample first 2 seconds to find active region
-    sample_frames = int(fps * 2)
-    motion_map = np.zeros((height, width), dtype=np.float32)
-    
-    ret, prev_frame = cap.read()
-    if not ret:
-        cap.release()
-        return []
-    
-    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-    prev_gray = cv2.GaussianBlur(prev_gray, (5, 5), 0)
-    
-    for _ in range(min(sample_frames, 60)):  # Max 60 frames
-        ret, frame = cap.read()
+    # Prefer heatmap-based ROI (OPTIMIZATION_GUIDE)
+    roi_result = compute_motion_heatmap(video_path, sample_frames=max(30, int(fps * 2)))
+    if roi_result is not None:
+        roi = roi_result[:4]
+    else:
+        # Fallback: center-weighted search
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return []
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        sample_frames = int(fps * 2)
+        motion_map = np.zeros((height, width), dtype=np.float32)
+        ret, prev_frame = cap.read()
         if not ret:
-            break
-        
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        
-        diff = cv2.absdiff(prev_gray, gray)
-        motion_map += diff.astype(np.float32)
-        prev_gray = gray
-    
-    cap.release()
-    
-    # Find region with highest motion (likely gun area)
-    # Use center-weighted search
-    center_y, center_x = height // 2, width // 2
-    roi_size = min(width, height) // 3
-    
-    best_score = 0
-    best_roi = None
-    
-    for y_offset in [-roi_size//2, 0, roi_size//2]:
-        for x_offset in [-roi_size//2, 0, roi_size//2]:
-            y = max(0, min(height - roi_size, center_y + y_offset))
-            x = max(0, min(width - roi_size, center_x + x_offset))
-            roi_motion = np.sum(motion_map[y:y+roi_size, x:x+roi_size])
-            if roi_motion > best_score:
-                best_score = roi_motion
-                best_roi = (x, y, roi_size, roi_size)
-    
-    if best_roi is None:
-        # Fallback: center region
+            cap.release()
+            return []
+        prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+        prev_gray = cv2.GaussianBlur(prev_gray, (5, 5), 0)
+        for _ in range(min(sample_frames, 60)):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            diff = cv2.absdiff(prev_gray, gray)
+            motion_map += diff.astype(np.float32)
+            prev_gray = gray
+        cap.release()
+        center_y, center_x = height // 2, width // 2
         roi_size = min(width, height) // 3
-        best_roi = ((width - roi_size) // 2, (height - roi_size) // 2, roi_size, roi_size)
+        best_score = 0
+        best_roi = None
+        for y_offset in [-roi_size//2, 0, roi_size//2]:
+            for x_offset in [-roi_size//2, 0, roi_size//2]:
+                y = max(0, min(height - roi_size, center_y + y_offset))
+                x = max(0, min(width - roi_size, center_x + x_offset))
+                roi_motion = np.sum(motion_map[y:y+roi_size, x:x+roi_size])
+                if roi_motion > best_score:
+                    best_score = roi_motion
+                    best_roi = (x, y, roi_size, roi_size)
+        roi = best_roi if best_roi is not None else ((width - roi_size) // 2, (height - roi_size) // 2, roi_size, roi_size)
     
-    return detect_shots_from_motion(video_path, fps, method=method, roi=best_roi)
+    return detect_shots_from_motion(video_path, fps, method=method, roi=roi, multi_frame_window=multi_frame_window, filter_direction=filter_direction)
 
 
 def extract_motion_features_at_ref_shots(video_path, fps, ref_shot_times, method="diff", roi=None, 
