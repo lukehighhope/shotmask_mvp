@@ -562,11 +562,22 @@ def detect_shots_from_motion_improved(video_path, fps, ref_shot_times=None, meth
         prominence=prominence,
     )
     
-    # Step 5: Return ref-guided shots (ground truth from reference times)
-    # These are the "true shots" learned from reference data
-    # Optionally, we could add global peaks that are very strong and not near any ref,
-    # but for now, prioritize ref-guided results (more accurate)
-    return ref_guided_shots
+    # Step 5: Return GLOBAL peaks (learned threshold), not ref_guided one-per-ref
+    # so motion detection is real detection, not "echo" of ground truth
+    if len(peaks) == 0:
+        return ref_guided_shots  # fallback if threshold too high
+    max_motion_all = float(np.max(motion_smooth))
+    frame_times_arr = np.arange(len(motion_smooth), dtype=float) / fps
+    shots_global = []
+    for idx in peaks:
+        t = frame_times_arr[idx]
+        conf = float(motion_smooth[idx] / max_motion_all) if max_motion_all > 0 else 0.5
+        shots_global.append({
+            "t": round(float(t), 4),
+            "frame": int(idx),
+            "confidence": round(conf, 2),
+        })
+    return shots_global
 
 
 def detect_shots_from_motion_roi_auto(video_path, fps, method="diff", multi_frame_window=1, filter_direction=False):
@@ -625,6 +636,7 @@ def extract_motion_features_at_ref_shots(video_path, fps, ref_shot_times, method
     """
     Extract motion features from windows around reference shot times.
     For each ref_shot_time, extract detailed motion characteristics in [ref_t - window_before, ref_t + window_after].
+    Optional: use window_before=0.01, window_after=0.05 for a tighter window (less noise).
     
     Args:
         video_path: Path to video file
@@ -632,8 +644,8 @@ def extract_motion_features_at_ref_shots(video_path, fps, ref_shot_times, method
         ref_shot_times: List of reference shot times (seconds)
         method: "flow" or "diff"
         roi: Optional (x, y, w, h) region of interest
-        window_before: Time before ref to extract (default 0.02s)
-        window_after: Time after ref to extract (default 0.08s)
+        window_before: Time before ref to extract (default 0.02s; try 0.01 for stricter)
+        window_after: Time after ref to extract (default 0.08s; try 0.05 for stricter)
     
     Returns:
         List of dicts, each containing features for one reference shot:
@@ -800,9 +812,10 @@ def extract_motion_features_at_ref_shots(video_path, fps, ref_shot_times, method
         # Peak to mean ratio
         peak_to_mean_ratio = float(peak_motion / window_mean) if window_mean > 0 else 0.0
         
-        # Motion before and after peak
+        # Motion before and after peak (pre_motion small, post_motion large => true shot)
         motion_before_peak = float(np.mean(window_motion[:peak_idx_local+1])) if peak_idx_local >= 0 else 0.0
         motion_after_peak = float(np.mean(window_motion[peak_idx_local:])) if peak_idx_local < len(window_motion) else 0.0
+        motion_ratio = float(motion_after_peak / (motion_before_peak + 1e-9))  # post/pre; large => shot at ref
         
         # Offset from reference
         offset_from_ref = float(peak_t - ref_t)
@@ -822,6 +835,7 @@ def extract_motion_features_at_ref_shots(video_path, fps, ref_shot_times, method
             "peak_to_mean_ratio": round(peak_to_mean_ratio, 4),
             "motion_before_peak": round(motion_before_peak, 6),
             "motion_after_peak": round(motion_after_peak, 6),
+            "motion_ratio": round(motion_ratio, 4),
             "motion_signal": [round(float(x), 6) for x in window_motion.tolist()],
             "time_signal": [round(float(x), 4) for x in window_times.tolist()],
         }

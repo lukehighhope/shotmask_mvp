@@ -12,6 +12,7 @@ import base64
 import numpy as np
 import soundfile as sf
 from scipy.ndimage import maximum_filter1d, minimum_filter1d
+from scipy.optimize import linear_sum_assignment
 
 from detectors.beep import detect_beeps
 from detectors.shot_audio import (
@@ -80,8 +81,8 @@ def run_calibration(audio_path, fps, ref_times, max_match_s=0.04):
     print("New videos will use these params automatically.")
 
 
-def calibration_metrics(ref_times, detected_times, max_match_s=0.49):
-    """Match ref to detected in order. Returns (n_matched, mae). max_match_s=0.49 for target 26/29 (ref[3]~4.17 to det 4.66)."""
+def calibration_metrics(ref_times, detected_times, max_match_s=0.12):
+    """Match ref to detected in order (greedy). Returns (n_matched, mae). max_match_s=0.10–0.15 for tight localization."""
     ref = np.asarray(ref_times)
     det = np.asarray(detected_times)
     if len(det) == 0:
@@ -102,8 +103,33 @@ def calibration_metrics(ref_times, detected_times, max_match_s=0.49):
     return len(errs), float(np.mean(np.abs(np.array(errs))))
 
 
-def calibration_report(ref_times, detected_times, max_match_s=0.49):
-    """Match ref to detected in order, print per-shot errors and summary. max_match_s=0.49 for target 26/29."""
+def calibration_metrics_hungarian(ref_times, detected_times, max_match_s=0.12):
+    """Global optimal bipartite matching: maximize pairs with |t_det - t_ref| <= max_match_s. Returns (n_matched, mae)."""
+    ref = np.asarray(ref_times)
+    det = np.asarray(detected_times)
+    n_ref, n_det = len(ref), len(det)
+    if n_det == 0:
+        return 0, float("inf")
+    n = max(n_ref, n_det)
+    BIG = 1e9
+    C = np.zeros((n, n))
+    for i in range(n_ref):
+        for j in range(n_det):
+            d = abs(det[j] - ref[i])
+            C[i, j] = d if d <= max_match_s else BIG
+    row_ind, col_ind = linear_sum_assignment(C)
+    errs = []
+    for i in range(n_ref):
+        j = col_ind[i]
+        if j < n_det and C[i, j] < BIG:
+            errs.append(det[j] - ref[i])
+    if not errs:
+        return 0, float("inf")
+    return len(errs), float(np.mean(np.abs(np.array(errs))))
+
+
+def calibration_report(ref_times, detected_times, max_match_s=0.12):
+    """Match ref to detected in order, print per-shot errors and summary. max_match_s=0.10–0.15 for tight localization."""
     ref = np.asarray(ref_times)
     det = np.asarray(detected_times)
     if len(det) == 0:
@@ -132,8 +158,10 @@ def calibration_report(ref_times, detected_times, max_match_s=0.49):
     err_arr = np.array(errs)
     mae = np.mean(np.abs(err_arr))
     rmse = np.sqrt(np.mean(err_arr ** 2))
+    n_h, mae_h = calibration_metrics_hungarian(ref_times, detected_times, max_match_s)
     print("Calibration vs reference (ref = beep + splits):")
-    print("  Matched {}/{} ref shots (max_match = {:.2f}s)".format(n, len(ref), max_match_s))
+    print("  Greedy:  Matched {}/{} ref shots (max_match = {:.2f}s)".format(n, len(ref), max_match_s))
+    print("  Hungarian: Matched {}/{} ref shots (global optimal bipartite)".format(n_h, len(ref)))
     print("  MAE = {:.3f}s  RMSE = {:.3f}s".format(mae, rmse))
     if n <= 12:
         for i in range(n):
@@ -1013,7 +1041,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                     # Train logistic regression on candidate features using ref times
                     # Build candidate features and feature context
                     MISS_WEIGHT = 4.5  # FN/miss weight for single-video high-recall training
-                    GT_COVER_TOL = 0.06
+                    GT_COVER_TOL = 0.04
                     data_lr, sr_lr = sf.read(audio_mono)
                     if len(data_lr.shape) > 1:
                         data_lr = np.mean(data_lr, axis=1)
@@ -1023,11 +1051,19 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                     cal_existing = load_calibrated_params() or {}
                     existing_model = cal_existing.get("logreg_model", None)
 
+                    # Use use_mfcc=True so candidates have mfcc_band for 9-dim LogReg training
+                    cal_cfg = cal_existing or {}
                     shots_result = detect_shots_improved(
                         data_lr, sr_lr, fps,
+                        cluster_window_sec=cal_cfg.get("cluster_window_sec", 0.25),
+                        mad_k=cal_cfg.get("mad_k", 6.0),
+                        candidate_min_dist_ms=cal_cfg.get("candidate_min_dist_ms", 50),
+                        score_weights=cal_cfg.get("score_weights"),
+                        min_confidence_threshold=None,
                         logreg_model=existing_model,
                         return_candidates=True,
-                        return_feature_context=True
+                        return_feature_context=True,
+                        use_mfcc=True,
                     )
                     if not isinstance(shots_result, tuple) or len(shots_result) != 3:
                         print("Train logreg: no candidates/context returned.")
@@ -1067,6 +1103,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                             float(c.get("E_low_ratio", 0.0)),
                             1.0 if c.get("hard_neg_slam", False) else 0.0,
                             1.0 if c.get("hard_neg_metal", False) else 0.0,
+                            float(c.get("mfcc_band", 0.0)),
                         ])
 
                     # ---- Step 1: Add nearest candidate for FN GT (most important) ----
@@ -1096,6 +1133,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                                 float(c.get("E_low_ratio", 0.0)),
                                 1.0 if c.get("hard_neg_slam", False) else 0.0,
                                 1.0 if c.get("hard_neg_metal", False) else 0.0,
+                                float(c.get("mfcc_band", 0.0)),
                             ])
 
                     # Miss samples: ref times without nearby candidate -> synthesize positive at GT time
@@ -1114,6 +1152,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                                 float(feat.get("E_low_ratio", 0.0)),
                                 1.0 if feat.get("hard_neg_slam", False) else 0.0,
                                 1.0 if feat.get("hard_neg_metal", False) else 0.0,
+                                0.0,
                             ])
                     if len(set(y)) < 2:
                         print("Train logreg: not enough class variety.")

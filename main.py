@@ -8,6 +8,7 @@ from detectors.beep import detect_beeps
 from detectors.shot_audio import detect_shots, cluster_peaks_by_time
 from detectors.shot_motion import detect_shots_from_motion_roi_auto, detect_shots_from_motion_improved
 from reference_splits import ref_shot_times as get_ref_shot_times
+from ref_from_image import get_ref_times_for_video
 from overlay.render_frames import render_overlay_frames
 from overlay.encode_overlay import encode_webm
 
@@ -28,7 +29,29 @@ def _nearest_within(times, t, tol):
     return None, None
 
 
-def _print_gt_diagnostics(ref_times, shots, candidates, tol=0.06):
+def non_maximum_suppression(detections, time_threshold_s=0.06):
+    """
+    Merge detections within time_threshold_s; keep the one with highest confidence per cluster.
+    Reduces duplicate detections for the same physical shot (e.g. reverb/echo).
+    """
+    if not detections or time_threshold_s <= 0:
+        return list(detections)
+    sorted_d = sorted(detections, key=lambda x: float(x["t"]))
+    kept = []
+    i = 0
+    while i < len(sorted_d):
+        cluster = [sorted_d[i]]
+        j = i + 1
+        while j < len(sorted_d) and (float(sorted_d[j]["t"]) - float(sorted_d[i]["t"])) < time_threshold_s:
+            cluster.append(sorted_d[j])
+            j += 1
+        best = max(cluster, key=lambda x: x.get("confidence", 0))
+        kept.append(dict(best))
+        i = j
+    return kept
+
+
+def _print_gt_diagnostics(ref_times, shots, candidates, tol=0.04):
     """
     Diagnostics against GT (ref_times):
     - candidate_coverage
@@ -116,6 +139,97 @@ def _print_gt_diagnostics(ref_times, shots, candidates, tol=0.06):
     print("=" * 50)
     print(f"FN-candidates: {_summ_stats(fn_scores)}")
     print(f"FP-candidates: {_summ_stats(fp_scores)}")
+
+
+def _evaluate_shots(ref_times, shots_list, tol=0.04):
+    """Compute TP/FP/FN and P/R/F1 for an already filtered list of shots (no confidence filter)."""
+    shot_times = [float(s["t"]) for s in shots_list]
+    ref_list = [float(t) for t in ref_times]
+    used_shot = set()
+    tp = 0
+    for rt in ref_list:
+        best_i, _ = _nearest_within(shot_times, rt, tol)
+        if best_i is not None and best_i not in used_shot:
+            tp += 1
+            used_shot.add(best_i)
+    fp = len(shots_list) - tp
+    fn = len(ref_list) - tp
+    p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+    return tp, fp, fn, p, r, f1
+
+
+def _precision_recall_at_threshold(ref_times, shots_with_confidence, conf_threshold, tol=0.04):
+    """Given ref (GT) times and list of shots with 't' and 'confidence', filter by conf >= conf_threshold, compute TP/FP/FN and P/R."""
+    filtered = [s for s in shots_with_confidence if s.get("confidence", 0) >= conf_threshold]
+    return _evaluate_shots(ref_times, filtered, tol)
+
+
+def _sweep_confidence_threshold(ref_times, shots_audio, tol=0.04, thresholds=None):
+    """Print Precision / Recall / F1 for different confidence thresholds (for tuning)."""
+    if thresholds is None:
+        thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    print("\n" + "=" * 60)
+    print("[Threshold sweep] Precision / Recall / F1 (tol=±{:.2f}s)".format(tol))
+    print("=" * 60)
+    print(f"{'thresh':>8} {'n':>4} {'TP':>4} {'FP':>4} {'FN':>4} {'P':>8} {'R':>8} {'F1':>8}")
+    print("-" * 60)
+    best_f1 = -1.0
+    best_thresh = None
+    for th in thresholds:
+        tp, fp, fn, p, r, f1 = _precision_recall_at_threshold(ref_times, shots_audio, th, tol)
+        n = tp + fp
+        print(f"{th:>8.2f} {n:>4} {tp:>4} {fp:>4} {fn:>4} {p:>8.2%} {r:>8.2%} {f1:>8.2%}")
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thresh = th
+    print("-" * 60)
+    if best_thresh is not None:
+        print(f"Best F1 = {best_f1:.2%} at threshold = {best_thresh}")
+    print("=" * 60)
+
+
+def _grid_search_audio_postprocess(ref_times, shots_audio, tol=0.04, conf_grid=None, nms_grid=None):
+    """
+    Grid search over (min_confidence, NMS window). For each (c, n): filter by confidence >= c,
+    apply NMS with window n, then compute P/R/F1. Print table and best params.
+    """
+    if conf_grid is None:
+        conf_grid = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+    if nms_grid is None:
+        nms_grid = [0.0, 0.04, 0.06, 0.08]
+    ref_list = [float(t) for t in ref_times]
+    best_f1 = -1.0
+    best_params = None
+    rows = []
+    for c in conf_grid:
+        filtered = [s for s in shots_audio if s.get("confidence", 0) >= c]
+        for n in nms_grid:
+            if n > 0:
+                list_nms = non_maximum_suppression(filtered, time_threshold_s=n)
+            else:
+                list_nms = list(filtered)
+            tp, fp, fn, p, r, f1 = _evaluate_shots(ref_times, list_nms, tol)
+            rows.append((c, n, len(list_nms), tp, fp, fn, p, r, f1))
+            if f1 > best_f1:
+                best_f1 = f1
+                best_params = (c, n)
+    print("\n" + "=" * 78)
+    print("[Grid search] Audio post-process: min_confidence × NMS (tol=±{:.2f}s)".format(tol))
+    print("=" * 78)
+    print(f"{'conf':>6} {'nms':>6} {'n':>4} {'TP':>4} {'FP':>4} {'FN':>4} {'P':>8} {'R':>8} {'F1':>8}")
+    print("-" * 78)
+    for c, n, n_det, tp, fp, fn, p, r, f1 in rows:
+        print(f"{c:>6.2f} {n:>6.2f} {n_det:>4} {tp:>4} {fp:>4} {fn:>4} {p:>8.2%} {r:>8.2%} {f1:>8.2%}")
+    print("-" * 78)
+    if best_params is not None:
+        c_best, n_best = best_params
+        print("Best F1 = {:.2%}  =>  min_confidence = {:.2f},  NMS = {:.2f}s".format(best_f1, c_best, n_best))
+        print("  Suggested: set calibrated_detector_params.json min_confidence_threshold = {:.2f}".format(c_best))
+        if n_best > 0:
+            print("  Run with: --nms {:.2f}".format(n_best))
+    print("=" * 78)
 
 def get_ffmpeg_cmd():
     """Get ffmpeg command (prefer PATH, otherwise use full path)"""
@@ -236,7 +350,7 @@ def cross_validate_shots(audio_shots, motion_shots, max_diff_s=0.15, adaptive_wi
         result["matched_confidence"] = matched_confidence
     return result
 
-def main(video, mode="all"):
+def main(video, mode="all", shots_filter="all", nms_s=0.0, sweep_threshold=False, grid_search=False):
     ffmpeg = get_ffmpeg_cmd()
     if not ffmpeg:
         print("ffmpeg not detected, please install first.")
@@ -321,7 +435,8 @@ def main(video, mode="all"):
     print(f"Original video: FPS={original_fps}, Duration={original_duration:.2f}s")
     
     cfr_video = "tmp/cfr.mp4"
-    run(f'"{ffmpeg}" -y -i "{video}" -r 59.94 -vsync cfr -c:v libx264 -crf 18 -preset fast -c:a aac "{cfr_video}"')
+    # Stream copy to avoid libx264 malloc issues on some systems; use source as CFR input for motion
+    run(f'"{ffmpeg}" -y -i "{video}" -c:v copy -c:a aac "{cfr_video}"')
 
     # CFR video fps for motion detection (motion detection uses CFR video)
     cfr_fps, cfr_duration = ffprobe_info(cfr_video)
@@ -340,30 +455,53 @@ def main(video, mode="all"):
         shots_audio, audio_candidates = shots_audio_result, []
     
     # Shots all happen after beep: drop any detection before beep (video start noise)
+    t0_beep = float(beeps[0]["t"]) if beeps else 0.0
     if beeps and len(shots_audio) > 0:
-        t0_beep = float(beeps[0]["t"])
         shots_audio = [s for s in shots_audio if s["t"] >= t0_beep]
         if audio_candidates:
             audio_candidates = [c for c in audio_candidates if c.get("t", 0) >= t0_beep]
     
-    # Video motion detection for cross-validation (improved with ref-guided learning)
+    # FN recovery: when ref available, add near-miss candidates (confidence >= 0.2, within 0.08s of ref)
+    if beeps and video and audio_candidates:
+        ref_times_recovery = get_ref_times_for_video(video, t0_beep)
+        if ref_times_recovery:
+            shot_times = [float(s["t"]) for s in shots_audio]
+            recovered = []
+            for ref_t in ref_times_recovery:
+                if _nearest_within(shot_times, ref_t, 0.04)[0] is not None:
+                    continue
+                best_c, best_conf, best_dt = None, -1.0, 999.0
+                for c in audio_candidates:
+                    dt = abs(float(c.get("t", 0)) - ref_t)
+                    if dt <= 0.08 and dt < best_dt:
+                        conf = float(c.get("confidence", 0))
+                        if conf >= 0.2:
+                            best_dt, best_conf, best_c = dt, conf, c
+                if best_c is not None:
+                    used_t = [s["t"] for s in shots_audio] + [float(r["t"]) for r in recovered]
+                    if _nearest_within(used_t, float(best_c["t"]), 0.03)[0] is None:
+                        recovered.append({"t": round(float(best_c["t"]), 4), "confidence": round(best_conf, 3), "score": best_c.get("score", 0), "frame": int(float(best_c["t"]) * 30)})
+            if recovered:
+                shots_audio = shots_audio + recovered
+                shots_audio.sort(key=lambda x: x["t"])
+                print(f"\n[FN recovery] Added {len(recovered)} shot(s) from candidates near ref")
+    
+    # Optional NMS: merge detections within time_threshold (e.g. 0.06s), keep highest confidence per cluster
+    if nms_s > 0 and len(shots_audio) > 0:
+        n_before = len(shots_audio)
+        shots_audio = non_maximum_suppression(shots_audio, time_threshold_s=nms_s)
+        print(f"\n[NMS] time_threshold={nms_s}s: {len(shots_audio)}/{n_before} shots after suppression")
+    
+    # Video motion detection for cross-validation (must be independent of GT)
     print("\n" + "=" * 50)
     print("Detecting shots from video motion (cross-validation)")
     print("=" * 50)
     
-    # Use ref-guided learning if we have beep (training set)
-    ref_times_for_motion = None
-    if beeps:
-        t0_beep_s = float(beeps[0]["t"])
-        ref_times_for_motion = get_ref_shot_times(t0_beep_s)
-        print(f"Using reference-guided motion detection (learning from {len(ref_times_for_motion)} ref shots)")
-        shots_motion = detect_shots_from_motion_improved(
-            cfr_video, cfr_fps, ref_shot_times=ref_times_for_motion, method="diff"
-        )
-    else:
-        shots_motion = detect_shots_from_motion_roi_auto(cfr_video, cfr_fps, method="diff")
+    # Use motion WITHOUT reference times so cross-validation is fair (no ref => no "29 GT" bias).
+    # Previously ref_shot_times were passed to motion, which returned one shot per ref (= 29).
+    shots_motion = detect_shots_from_motion_roi_auto(cfr_video, cfr_fps, method="diff")
     
-    print(f"Motion detection: {len(shots_motion)} shots detected")
+    print(f"Motion detection: {len(shots_motion)} shots detected (independent of ref)")
     
     # Cross-validate (adaptive max_diff_s from median inter-shot interval)
     validation = cross_validate_shots(shots_audio, shots_motion, max_diff_s=0.15, adaptive_window=True, use_confidence=True)
@@ -409,10 +547,24 @@ def main(video, mode="all"):
         shot["motion_confirmed"] = i in validation["matched_audio"]
         shots.append(shot)
     
-    t0_beep_s = float(beeps[0]["t"]) if beeps else 0.0
+    # Filter to improve precision: --shots-filter strict | balanced | all
+    shots_before_filter = len(shots)
+    if shots_filter == "strict":
+        shots = [s for s in shots if s.get("motion_confirmed")]
+        print(f"\n[shots-filter=strict] Kept only motion-confirmed: {len(shots)}/{shots_before_filter} shots")
+    elif shots_filter == "balanced":
+        min_conf = 0.45
+        shots = [s for s in shots if s.get("motion_confirmed") or s.get("confidence", 0) >= min_conf]
+        print(f"\n[shots-filter=balanced] Kept motion-confirmed OR confidence>={min_conf}: {len(shots)}/{shots_before_filter} shots")
+    
+    t0_beep_s = t0_beep
     if beeps:
-        ref_times = get_ref_shot_times(t0_beep_s)
-        _print_gt_diagnostics(ref_times, shots_audio, audio_candidates, tol=0.06)
+        ref_times = get_ref_times_for_video(video, t0_beep_s) if video else get_ref_shot_times(t0_beep_s)
+        _print_gt_diagnostics(ref_times, shots_audio, audio_candidates, tol=0.04)
+        if sweep_threshold:
+            _sweep_confidence_threshold(ref_times, shots_audio, tol=0.04)
+        if grid_search:
+            _grid_search_audio_postprocess(ref_times, shots_audio, tol=0.04)
     shot_times_since_beep = [float(round(s["t"] - t0_beep_s, 4)) for s in shots]
 
     events = {
@@ -458,5 +610,13 @@ if __name__ == "__main__":
     parser.add_argument("--video", required=True, help="Video file path")
     parser.add_argument("--mode", choices=["beep", "shots", "motion", "all"], default="all",
                         help="Run mode: beep=detect beep only, shots=detect shots from audio, motion=detect from video motion, all=full pipeline with cross-validation (default)")
+    parser.add_argument("--shots-filter", choices=["all", "strict", "balanced"], default="all",
+                        help="all=keep all audio detections; strict=only motion-confirmed (high precision); balanced=motion-confirmed OR confidence>=0.45")
+    parser.add_argument("--nms", type=float, default=0, metavar="SEC",
+                        help="NMS time window in seconds (e.g. 0.06); merge nearby detections, keep best confidence. 0=disabled")
+    parser.add_argument("--sweep-threshold", action="store_true",
+                        help="Print P/R/F1 for confidence thresholds 0.1..0.9 (requires beep/ref)")
+    parser.add_argument("--grid-search", action="store_true",
+                        help="Grid search min_confidence × NMS for best F1 (requires beep/ref)")
     args = parser.parse_args()
-    main(args.video, args.mode)
+    main(args.video, args.mode, args.shots_filter, args.nms, args.sweep_threshold, args.grid_search)

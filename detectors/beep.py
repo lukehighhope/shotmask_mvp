@@ -20,8 +20,8 @@ def detect_beeps(audio_path, fps):
     win = max(1, int(sr * 0.01))
     smooth = np.convolve(energy, np.ones(win) / win, mode="same")
 
-    # Increase threshold to reduce false positives (original 6*std was too sensitive for some materials)
-    threshold = float(np.mean(smooth) + 8 * np.std(smooth))
+    # Threshold: 6*std balances sensitivity (e.g. 5.mp4 beep) vs false positives; 8*std missed some valid beeps
+    threshold = float(np.mean(smooth) + 6 * np.std(smooth))
 
     # distance: at least 200ms apart to avoid multiple triggers for one beep
     peaks, _ = find_peaks(smooth, height=threshold, distance=int(sr * 0.2))

@@ -3,7 +3,6 @@ import os
 import soundfile as sf
 import numpy as np
 from scipy.signal import butter, lfilter, find_peaks
-from scipy.ndimage import maximum_filter1d, minimum_filter1d
 from detectors.shot_logreg import predict_logreg
 try:
     import librosa
@@ -97,88 +96,6 @@ def compute_onset_strength(y, sr, hop_length=256, n_fft=1024, band_low_hz=1000, 
     return onset
 
 
-def compute_multi_band_energy(y, sr, hop_length=256, n_fft=1024):
-    """
-    Compute energy in multiple frequency bands for each time frame.
-    Returns: (E_low, E_mid, E_high) where each is array of energy per frame.
-    """
-    # Frequency bands
-    freq_bins = n_fft // 2 + 1
-    freqs = np.fft.rfftfreq(n_fft, 1.0/sr)
-    
-    # Band indices
-    low_idx = (freqs >= 50) & (freqs < 300)
-    mid_idx = (freqs >= 300) & (freqs < 3000)
-    high_idx = (freqs >= 3000) & (freqs < 9000)
-    
-    # Simple STFT
-    window = np.hanning(n_fft)
-    hop_samples = hop_length
-    n_frames = (len(y) - n_fft) // hop_samples + 1
-    
-    E_low = np.zeros(n_frames)
-    E_mid = np.zeros(n_frames)
-    E_high = np.zeros(n_frames)
-    
-    for i in range(n_frames):
-        start = i * hop_samples
-        end = start + n_fft
-        if end > len(y):
-            break
-        frame = y[start:end] * window
-        fft = np.fft.rfft(frame)
-        mag = np.abs(fft)
-        
-        E_low[i] = np.sum(mag[low_idx]**2)
-        E_mid[i] = np.sum(mag[mid_idx]**2)
-        E_high[i] = np.sum(mag[high_idx]**2)
-    
-    return E_low, E_mid, E_high
-
-
-def compute_spectral_features(y, sr, hop_length=256, n_fft=1024):
-    """
-    Compute spectral features: centroid, flatness, rolloff.
-    Returns arrays per time frame.
-    """
-    window = np.hanning(n_fft)
-    hop_samples = hop_length
-    n_frames = (len(y) - n_fft) // hop_samples + 1
-    freq_bins = n_fft // 2 + 1
-    freqs = np.fft.rfftfreq(n_fft, 1.0/sr)
-    
-    centroid = np.zeros(n_frames)
-    flatness = np.zeros(n_frames)
-    
-    for i in range(n_frames):
-        start = i * hop_samples
-        end = start + n_fft
-        if end > len(y):
-            break
-        frame = y[start:end] * window
-        fft = np.fft.rfft(frame)
-        mag = np.abs(fft)
-        mag_sq = mag**2
-        
-        # Spectral centroid
-        total_energy = np.sum(mag_sq)
-        if total_energy > 1e-9:
-            centroid[i] = np.sum(freqs * mag_sq) / total_energy
-        else:
-            centroid[i] = 0
-        
-        # Spectral flatness (geometric mean / arithmetic mean)
-        mag_nonzero = mag[mag > 1e-9]
-        if len(mag_nonzero) > 0:
-            geo_mean = np.exp(np.mean(np.log(mag_nonzero)))
-            arith_mean = np.mean(mag)
-            flatness[i] = geo_mean / (arith_mean + 1e-9)
-        else:
-            flatness[i] = 0
-    
-    return centroid, flatness
-
-
 def compute_attack_slope(envelope, sr, window_ms=10):
     """
     Compute attack slope: rate of rise in envelope.
@@ -198,26 +115,50 @@ def compute_attack_slope(envelope, sr, window_ms=10):
     return attack
 
 
+def refine_onset_time(data, sr, t_sec, envelope=None, window_sec=0.06):
+    """
+    Refine shot time to true onset (max attack) in ±window_sec around t_sec.
+    Reduces error from using peak time (which can be pulled by echo/reverb).
+    Target: 20–40ms localization error.
+    """
+    if envelope is None:
+        env_win = max(1, int(sr * 0.003))
+        energy = np.abs(np.asarray(data, dtype=np.float64))
+        envelope = np.convolve(energy, np.ones(env_win) / env_win, mode="same")
+    center = int(round(t_sec * sr))
+    half = int(round(sr * window_sec / 2.0))
+    start = max(0, center - half)
+    end = min(len(envelope), center + half)
+    if end - start < 4:
+        return t_sec
+    seg = envelope[start:end]
+    diff = np.diff(seg)
+    if len(diff) == 0:
+        return t_sec
+    # True onset = max positive slope (attack)
+    idx = int(np.argmax(diff))
+    refined_sample = start + idx
+    return float(refined_sample) / sr
+
+
 def adaptive_threshold_mad(signal, window_sec=2.0, k=6.0, sr=None):
     """
     Adaptive threshold using sliding window + MAD (Median Absolute Deviation).
     More robust than global percentile for varying noise levels.
     Optimized: compute threshold at regular intervals, then interpolate.
-    
+
     Args:
-        signal: Input signal
-        window_sec: Window size in seconds
-        k: Multiplier for MAD (typically 6-10)
-        sr: Sample rate (if None, assumes signal is already per-sample)
-    
+        signal: Input signal (e.g. onset strength per frame).
+        window_sec: Window size in seconds (in frame units when sr is frame rate).
+        k: Multiplier for MAD (typically 6-10).
+        sr: Frame rate (required): samples per second, e.g. sr/hop_length for STFT frames.
+
     Returns:
-        threshold: Adaptive threshold array (same length as signal)
+        threshold: Adaptive threshold array (same length as signal).
     """
     if sr is None:
-        window_samples = int(len(signal) * window_sec / signal.shape[0] if hasattr(signal, 'shape') else window_sec)
-    else:
-        window_samples = int(sr * window_sec)
-    
+        raise ValueError("adaptive_threshold_mad requires sr (frame rate), e.g. sample_rate / hop_length")
+    window_samples = int(sr * window_sec)
     window_samples = max(10, min(window_samples, len(signal) // 4))
     
     # Optimize: compute threshold at regular intervals (every window_samples/4)
@@ -400,11 +341,20 @@ def detect_shots(
         mad_k = cal.get("mad_k", 7.0)  # Increased from 6.0 to reduce false positives
         candidate_min_dist_ms = cal.get("candidate_min_dist_ms", 80)  # Increased from 50ms
         score_weights = cal.get("score_weights", None)  # [onset, r1, flatness, attack, r2_penalty]
-        min_score_threshold = cal.get("min_score_threshold", None)
+        # min_confidence_threshold filters final shots by confidence; support legacy key min_score_threshold
+        min_confidence_threshold = cal.get("min_confidence_threshold", cal.get("min_score_threshold", None))
         logreg_model = cal.get("logreg_model", None)
         scene_config = cal.get("scene_config", None)  # indoor/outdoor/near/far
-        # min_score_threshold is used as min_confidence filter on final shots; keep from cal even when LR is present
-        
+        use_mfcc = cal.get("use_mfcc", False)  # optional MFCC term in scoring (requires librosa)
+        cnn_model, cnn_device = None, None
+        if cal.get("cnn_gunshot_path"):
+            try:
+                from .shot_cnn import load_cnn_gunshot
+                cnn_model, cnn_device = load_cnn_gunshot(cal.get("cnn_gunshot_path"))
+            except Exception:
+                pass
+        cnn_fusion_weight = float(cal.get("cnn_fusion_weight", 0.5))  # final_conf = (1-w)*logreg + w*cnn
+
         return detect_shots_improved(
             data, sr, fps,
             threshold_percentile=threshold_percentile,
@@ -416,10 +366,14 @@ def detect_shots(
             mad_k=mad_k,
             candidate_min_dist_ms=candidate_min_dist_ms,
             score_weights=score_weights,
-            min_score_threshold=min_score_threshold,
+            min_confidence_threshold=min_confidence_threshold,
             scene_config=scene_config,
             logreg_model=logreg_model,
             return_candidates=return_candidates,
+            use_mfcc=use_mfcc,
+            cnn_model=cnn_model,
+            cnn_device=cnn_device,
+            cnn_fusion_weight=cnn_fusion_weight,
         )
     
     # Legacy method (original implementation)
@@ -575,24 +529,28 @@ def detect_shots_improved(
     mad_k=6.0,
     candidate_min_dist_ms=50,
     score_weights=None,
-    min_score_threshold=None,
+    min_confidence_threshold=None,
     scene_config=None,
     logreg_model=None,
     return_candidates=False,
     return_feature_context=False,
+    use_mfcc=False,
+    cnn_model=None,
+    cnn_device=None,
+    cnn_fusion_weight=0.5,
 ):
     """
     Improved two-stage gunshot detection with multi-feature fusion.
-    
+
     Stage 1: High-recall candidate detection using onset/flux (1k-6kHz band).
     Stage 2: Multi-feature verification, robust+sigmoid confidence, hard-negative filtering.
-    
+
     Args:
         use_dynamic_cluster: If True, set cluster_window from median inter-candidate interval.
         mad_k: MAD threshold multiplier (higher = stricter).
         candidate_min_dist_ms: Minimum distance between candidate peaks (ms).
         score_weights: [onset, r1, flatness, attack, r2_penalty] or None to use scene_config.
-        min_score_threshold: Minimum confidence (float only; None disables).
+        min_confidence_threshold: Filter final shots by confidence (float; None disables). Not a raw-score threshold.
         scene_config: Preset for score_weights: "indoor"|"outdoor"|"near"|"far"|"default".
         logreg_model: Optional logistic regression model dict (weights/bias/mean/std).
         return_candidates: If True, return (shots, candidate_features).
@@ -619,9 +577,9 @@ def detect_shots_improved(
         fft = np.fft.rfft(frame)
         stft_mag[:, i] = np.abs(fft)
     
-    # Onset = spectral flux in 1k-6kHz band, aligned to n_frames (frame axis unified)
-    freq_mask_1k_6k = (freqs >= 1000) & (freqs <= 6000)
-    flux = compute_spectral_flux(stft_mag, power=1.0, freq_mask=freq_mask_1k_6k, log_mag=True)
+    # Onset = spectral flux in 80–6000 Hz (gunshot band; include low for punch)
+    freq_mask_gunshot = (freqs >= 80) & (freqs <= 6000)
+    flux = compute_spectral_flux(stft_mag, power=1.0, freq_mask=freq_mask_gunshot, log_mag=True)
     onset = np.zeros(n_frames, dtype=np.float64)
     onset[1:] = flux[:]
     
@@ -673,7 +631,19 @@ def detect_shots_improved(
             existing_set.add(f)
             candidate_peaks = np.append(candidate_peaks, f)
     candidate_peaks = np.unique(candidate_peaks).astype(int)
-    
+
+    # ---------- Stage1/Stage2 diagnostic counts (no algorithm change) ----------
+    diag = {
+        "stage1_candidates": len(candidate_peaks),
+        "fingerprint_fail": 0,
+        "cluster_loser": 0,
+        "hard_dedup_dropped": 0,
+        "soft_dedup_dropped": 0,
+        "rate_cap_dropped": 0,
+        "min_conf_dropped": 0,
+        "rate_limit_dropped": 0,
+    }
+
     if len(candidate_peaks) == 0:
         if return_feature_context:
             return ([], [], {})
@@ -778,7 +748,7 @@ def detect_shots_improved(
         candidate_r2_log.append(r2_log)
         candidate_attack.append(attack_norm)
         
-        candidate_features.append({
+        feat_dict = {
             "t": t,
             "peak_idx": int(peak_idx),
             "onset_raw": onset_val,
@@ -794,7 +764,24 @@ def detect_shots_improved(
             "hard_neg_metal": hard_neg_metal,
             "r1_penalty": r1_penalty,
             "E_low_ratio": E_low_ratio,
-        })
+            "E_high_ratio": (r1 * r2) / (1.0 + r1 + r1 * r2 + eps) if (1.0 + r1 + r1 * r2) > eps else 0.0,
+        }
+        # Optional MFCC (gunshot fingerprint): if librosa available, add band summary for scoring
+        if HAS_LIBROSA:
+            win_sec = 0.05
+            start_s = max(0, int((t - win_sec) * sr))
+            end_s = min(len(data), int((t + win_sec) * sr))
+            if end_s > start_s + int(0.02 * sr):
+                y_win = data[start_s:end_s].astype(np.float32)
+                mfcc = librosa.feature.mfcc(y=y_win, sr=sr, n_mfcc=6, n_fft=min(1024, len(y_win)//4), hop_length=min(256, len(y_win)//8))
+                if mfcc.size > 0:
+                    # coeffs 1–4 often discriminate transient sounds (gunshot vs speech)
+                    feat_dict["mfcc_band"] = float(np.mean(np.abs(mfcc[1:4, :])))
+                else:
+                    feat_dict["mfcc_band"] = 0.0
+            else:
+                feat_dict["mfcc_band"] = 0.0
+        candidate_features.append(feat_dict)
 
     # Build reusable feature context (for miss samples)
     feature_context = {
@@ -825,6 +812,19 @@ def detect_shots_improved(
     else:
         onset_norms, flatness_norms, r1_norms, r2_norms = [], [], [], []
     
+    # Optional MFCC norm (when use_mfcc and librosa; only in weighted path, not logreg)
+    mfcc_norms = []
+    if use_mfcc and HAS_LIBROSA and len(candidate_features) > 0 and all("mfcc_band" in f for f in candidate_features):
+        mfcc_bands = [f["mfcc_band"] for f in candidate_features]
+        mfcc_norms = 1.0 / (1.0 + np.exp(-_robust_z(mfcc_bands)))
+    else:
+        mfcc_norms = [0.0] * len(candidate_features)
+    w_mfcc = 0.0
+    if use_mfcc and score_weights is not None and len(score_weights) >= 6:
+        w_mfcc = float(score_weights[5])
+    elif use_mfcc and HAS_LIBROSA:
+        w_mfcc = 0.05
+
     # Score candidates (hand-tuned)
     w_onset, w_r1, w_flat, w_attack, w_r2_penalty = _resolve_score_weights(score_weights, scene_config)
     for i, feat in enumerate(candidate_features):
@@ -833,7 +833,8 @@ def detect_shots_improved(
         r1_norm = r1_norms[i]
         r2_norm = r2_norms[i]
         attack_norm = candidate_attack[i]
-        
+        mfcc_n = mfcc_norms[i] if i < len(mfcc_norms) else 0.0
+
         score = (
             w_onset * onset_norm
             + w_r1 * r1_norm
@@ -841,20 +842,23 @@ def detect_shots_improved(
             + w_flat * flatness_norm
             + w_attack * attack_norm
             - w_r2_penalty * r2_norm
+            + w_mfcc * mfcc_n
         )
         if feat["hard_neg_slam"]:
             score -= 0.10
         if feat["hard_neg_metal"]:
             score -= 0.25
-        
+
         candidate_scores.append(score)
         feat["score"] = score
     
-    # If logistic regression model is provided, use it to score candidates
+    # If logistic regression model is provided, use it to score candidates.
+    # (Keep as comment: uncommented "use it to score candidates" would cause SyntaxError.)
     if logreg_model and len(candidate_features) > 0:
+        n_w = len(logreg_model.get("weights", []))
         X = []
         for i, feat in enumerate(candidate_features):
-            X.append([
+            row = [
                 float(feat["onset_log"]),
                 float(feat["r1_log"]),
                 float(feat["r2_log"]),
@@ -863,11 +867,26 @@ def detect_shots_improved(
                 float(feat["E_low_ratio"]),
                 1.0 if feat["hard_neg_slam"] else 0.0,
                 1.0 if feat["hard_neg_metal"] else 0.0,
-            ])
+            ]
+            if n_w == 9:
+                row.append(float(feat.get("mfcc_band", 0.0)))
+            X.append(row)
         probs = predict_logreg(logreg_model, np.asarray(X))
         candidate_scores = probs.tolist()
         for i, feat in enumerate(candidate_features):
             feat["score"] = float(candidate_scores[i])
+
+    # Fingerprint v2: soft scoring (add/subtract points), not hard gate
+    FINGERPRINT_W_ATTACK = 0.08
+    FINGERPRINT_W_HIGH = 0.05
+    FINGERPRINT_W_LOW = 0.05
+    for i, feat in enumerate(candidate_features):
+        attack_n = np.clip(feat.get("attack_norm", 0), 0, 1)
+        high_r = np.clip(feat.get("E_high_ratio", 0), 0, 1)
+        low_r = np.clip(feat.get("E_low_ratio", 0), 0, 1)
+        bonus = FINGERPRINT_W_ATTACK * attack_n + FINGERPRINT_W_HIGH * high_r + FINGERPRINT_W_LOW * low_r
+        candidate_scores[i] = candidate_scores[i] + bonus
+        feat["score"] = float(candidate_scores[i])
     
     def _sigmoid(x):
         return 1.0 / (1.0 + np.exp(-x))
@@ -878,31 +897,44 @@ def detect_shots_improved(
     mad_s = np.median(np.abs(scores_arr - med_s)) + 1e-9
     z = (scores_arr - med_s) / (mad_s * 1.4826 + 1e-9)
     score_norm = 1.0 / (1.0 + np.exp(-np.clip(z, -5, 5)))
+    for i, feat in enumerate(candidate_features):
+        feat["confidence"] = float(score_norm[i])
     
     # ========== Clustering & Selection ==========
     candidate_times = [f["t"] for f in candidate_features]
     if use_dynamic_cluster and len(candidate_times) >= 3:
         cluster_window_sec = dynamic_cluster_window(candidate_times, min_window=0.08, max_window=0.30)
     clusters = cluster_peaks_by_time(candidate_times, cluster_window_sec=cluster_window_sec)
-    
+    diag["cluster_loser"] = sum(max(0, len(c) - 1) for c in clusters)
+
+    # Fingerprint v2: only hard kill when "extremely unlike gunshot" (slow + low-freq + narrow-band)
+    def _hard_kill(c):
+        attack_n = c.get("attack_norm", 0)
+        high_r = c.get("E_high_ratio", 0)
+        flat = c.get("flatness", 0)
+        return (attack_n < 0.05 and high_r < 0.08 and flat < 0.02)
+
     shots = []
     for cluster in clusters:
         if len(cluster) == 0:
             continue
-        
-        cluster_raw_scores = [candidate_scores[i] for i in cluster]
-        best_local = np.argmax(cluster_raw_scores)
-        best_idx_in_cluster = cluster[best_local]
+
+        best_idx_in_cluster = max(cluster, key=lambda i: candidate_scores[i])
         best_candidate = candidate_features[best_idx_in_cluster]
-        
-        margin = cluster_raw_scores[best_local] - np.median(cluster_raw_scores)
+        if _hard_kill(best_candidate):
+            diag["fingerprint_fail"] += 1
+            continue
+
+        cluster_scores = [candidate_scores[i] for i in cluster]
+        margin = candidate_scores[best_idx_in_cluster] - np.median(cluster_scores)
         confidence_margin = float(_sigmoid(margin / 0.15))
         confidence_absolute = float(score_norm[best_idx_in_cluster])
         confidence = 0.5 * confidence_absolute + 0.5 * confidence_margin
-        
+
         shots.append({
             "t": round(float(best_candidate["t"]), 4),
-            "frame": int(best_candidate["t"] * fps),
+            "frame": round(best_candidate["t"] * fps),
+            "fps": float(fps),
             "confidence": round(float(confidence), 3),
             "onset": round(float(best_candidate.get("onset_raw", 0.0)), 3),
             "r1": round(float(best_candidate["r1"]), 2),
@@ -910,32 +942,99 @@ def detect_shots_improved(
             "flatness": round(float(best_candidate["flatness"]), 3),
             "attack": round(float(best_candidate["attack"]), 3),
             "score": round(float(best_candidate["score"]), 3),
+            "E_low_ratio": round(float(best_candidate.get("E_low_ratio", 0)), 3),
+            "E_high_ratio": round(float(best_candidate.get("E_high_ratio", 0)), 3),
         })
-    
-    # Cap shots by plausible fire rate using raw score ranking
+
+    # Onset refinement: replace peak time with true onset (max attack) in ±60ms
+    if len(shots) > 0 and envelope is not None:
+        for s in shots:
+            t_ref = refine_onset_time(data, sr, s["t"], envelope=envelope, window_sec=0.06)
+            s["t"] = round(t_ref, 4)
+            s["frame"] = round(s["t"] * fps)
+        shots.sort(key=lambda x: x["t"])
+
+    # Hard dedup: shots < 120ms apart → keep max confidence
+    n_before_hard = len(shots)
+    if len(shots) > 1:
+        shots.sort(key=lambda x: x["t"])
+        merged = [shots[0]]
+        for s in shots[1:]:
+            if s["t"] - merged[-1]["t"] < 0.12:
+                if s["confidence"] > merged[-1]["confidence"]:
+                    merged[-1] = s
+            else:
+                merged.append(s)
+        shots = merged
+    diag["hard_dedup_dropped"] = n_before_hard - len(shots)
+
+    # Soft dedup: 120–250ms apart and similar flatness → keep max confidence (disable to verify FN source)
+    enable_soft_dedup = False
+    n_before_soft = len(shots)
+    if enable_soft_dedup and len(shots) > 1:
+        merged = [shots[0]]
+        for s in shots[1:]:
+            dt = s["t"] - merged[-1]["t"]
+            flat_diff = abs(s.get("flatness", 0) - merged[-1].get("flatness", 0))
+            if 0.12 <= dt <= 0.25 and flat_diff < 0.2:
+                if s["confidence"] > merged[-1]["confidence"]:
+                    merged[-1] = s
+            else:
+                merged.append(s)
+        shots = merged
+    diag["soft_dedup_dropped"] = n_before_soft - len(shots)
+
+    # Cap shots by plausible fire rate using raw score ranking (round 1: max_rate=6.0 to verify FN from rate cap)
+    n_before_rate_cap = len(shots)
     if len(shots) > 2:
-        max_rate = 2.2  # shots/sec (outdoor pistol baseline)
+        max_rate = 6.0  # was 2.2; relax to see if rate_cap was eating FN
         duration = shots[-1]["t"] - shots[0]["t"] if len(shots) > 1 else 1.0
         max_allowed = int(duration * max_rate) + 2
         if len(shots) > max_allowed:
             shots.sort(key=lambda x: x["score"], reverse=True)
             shots = shots[:max_allowed]
             shots.sort(key=lambda x: x["t"])
-    
+    diag["rate_cap_dropped"] = n_before_rate_cap - len(shots)
+
+    # Optional: fuse CNN-on-mel score with LogReg confidence BEFORE threshold filter,
+    # so keep/drop decision uses the fused score (actually uses CNN).
+    if cnn_model is not None and cnn_device is not None and len(shots) > 0 and 0 < cnn_fusion_weight <= 1:
+        try:
+            from .shot_cnn import mel_at_time, predict_proba_one
+            for s in shots:
+                mel = mel_at_time(data, sr, float(s["t"]))
+                cnn_p = predict_proba_one(cnn_model, cnn_device, mel)
+                s["confidence"] = round(
+                    (1.0 - cnn_fusion_weight) * s["confidence"] + cnn_fusion_weight * cnn_p, 3
+                )
+        except Exception:
+            pass
+
     # Optional fixed confidence filter (only if explicitly set to a number)
-    if len(shots) > 0 and isinstance(min_score_threshold, (int, float)):
-        shots = [s for s in shots if s["confidence"] >= min_score_threshold]
-    
+    n_before_min_conf = len(shots)
+    if len(shots) > 0 and isinstance(min_confidence_threshold, (int, float)):
+        shots = [s for s in shots if s["confidence"] >= min_confidence_threshold]
+    diag["min_conf_dropped"] = n_before_min_conf - len(shots)
+
     # Rate limit protection (only for extreme cases)
+    n_before_rate_limit = len(shots)
     if len(shots) > 0:
         duration = shots[-1]["t"] - shots[0]["t"] if len(shots) > 1 else 1.0
         shots_per_sec = len(shots) / duration if duration > 0 else 0
         if shots_per_sec > 6.0:  # Extreme case: >6 shots/sec
-            # Keep top N by confidence
             shots.sort(key=lambda x: x["confidence"], reverse=True)
             max_shots = int(duration * 3.0) + 5  # Max 3 shots/sec
             shots = shots[:max_shots]
             shots.sort(key=lambda x: x["t"])
+    diag["rate_limit_dropped"] = n_before_rate_limit - len(shots)
+
+    # Print Stage1/Stage2 diagnostic summary
+    stage2_final = len(shots)
+    print("[shot_audio] Stage1 candidates: {}".format(diag["stage1_candidates"]))
+    print("[shot_audio] Stage2 final_shots: {}".format(stage2_final))
+    print("[shot_audio] Filter/merge counts: fingerprint_fail={}  cluster_loser={}  hard_dedup={}  soft_dedup={}  rate_cap={}  min_conf={}  rate_limit={}".format(
+        diag["fingerprint_fail"], diag["cluster_loser"], diag["hard_dedup_dropped"],
+        diag["soft_dedup_dropped"], diag["rate_cap_dropped"], diag["min_conf_dropped"], diag["rate_limit_dropped"]))
     
     # Export diagnostics if requested
     if export_diagnostics and audio_path:
