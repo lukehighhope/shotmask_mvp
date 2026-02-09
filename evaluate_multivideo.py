@@ -1,13 +1,13 @@
 """
 在 01032026 五段视频上用各自真值(1.txt~5.txt)评估当前检测的精确率/召回率/F1。
 Usage: python evaluate_multivideo.py --folder 01032026
+       python evaluate_multivideo.py --folder 01032026 --cnn-only --threshold 0.5 --analyze-fp
 """
 import os
-import subprocess
+import numpy as np
 
-from detectors.beep import detect_beeps
 from detectors.shot_audio import detect_shots
-from ref_from_image import get_ref_times_for_video
+from ref_from_image import get_ref_times_for_video, get_beep_t_for_video
 
 # Reuse train script helpers
 from train_logreg_multivideo import (
@@ -18,6 +18,26 @@ from train_logreg_multivideo import (
 )
 
 TOL = 0.04
+NMS_TIME_WINDOW = 0.06
+
+
+def non_maximum_suppression(detections, time_window=NMS_TIME_WINDOW, key="confidence"):
+    """抑制时间窗口内的重复检测，保留置信度最高者。"""
+    if not detections:
+        return []
+    sorted_d = sorted(detections, key=lambda x: float(x["t"]))
+    kept = []
+    i = 0
+    while i < len(sorted_d):
+        cluster = [sorted_d[i]]
+        j = i + 1
+        while j < len(sorted_d) and (float(sorted_d[j]["t"]) - float(sorted_d[i]["t"])) < time_window:
+            cluster.append(sorted_d[j])
+            j += 1
+        best = max(cluster, key=lambda x: x.get(key, 0))
+        kept.append(dict(best))
+        i = j
+    return kept
 
 
 def _nearest_within(times, t, tol):
@@ -51,10 +71,31 @@ def evaluate_shots(ref_times, shots_list, tol=TOL):
     return tp, fp, fn, p, r, f1
 
 
+def analyze_false_positives(ref_times, shots_list, tol=TOL):
+    """分析误报的时间分布和置信度，返回 FP 列表。"""
+    ref_list = [float(t) for t in ref_times]
+    fps = []
+    for s in shots_list:
+        t = float(s.get("t", 0))
+        is_fp = all(abs(t - rt) > tol for rt in ref_list)
+        if is_fp:
+            dist = min([abs(t - rt) for rt in ref_list]) if ref_list else 999.0
+            fps.append({
+                "t": t,
+                "confidence": float(s.get("confidence", 0)),
+                "distance_to_nearest_gt": dist,
+            })
+    return fps
+
+
 def main():
     import argparse
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="Evaluate gunshot detection (LogReg+CNN or CNN-only)")
     ap.add_argument("--folder", default="01032026")
+    ap.add_argument("--cnn-only", action="store_true", help="Use CNN only for scoring (no LogReg)")
+    ap.add_argument("--threshold", type=float, default=None, help="Post-filter: keep only shots with confidence >= this (for threshold sweep)")
+    ap.add_argument("--nms", type=float, default=NMS_TIME_WINDOW, help=f"NMS time window in seconds (0=disable). Default {NMS_TIME_WINDOW}")
+    ap.add_argument("--analyze-fp", action="store_true", help="Print false positive analysis (confidence distribution)")
     args = ap.parse_args()
     folder = os.path.abspath(args.folder)
     if not os.path.isdir(folder):
@@ -63,24 +104,25 @@ def main():
     videos = sorted(
         [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".mp4")]
     )
-    print(f"Evaluating {len(videos)} videos (tol=±{TOL}s)\n")
+    mode = "CNN-only" if args.cnn_only else "LogReg+CNN"
+    print(f"Evaluating {len(videos)} videos (tol=±{TOL}s, mode={mode})\n")
     print(f"{'video':<20} {'GT':>4} {'n':>4} {'TP':>4} {'FP':>4} {'FN':>4} {'P':>8} {'R':>8} {'F1':>8}")
     print("-" * 80)
     total_tp, total_fp, total_fn = 0, 0, 0
+    per_video_for_fp = []  # (ref_times, shots_audio, name) for --analyze-fp
     for vp in videos:
         name = os.path.basename(vp)
         audio_path = extract_audio(vp)
         fps, _ = get_fps_duration(vp)
-        beeps = detect_beeps(audio_path, fps)
-        if not beeps:
+        beep_t = get_beep_t_for_video(vp, audio_path, fps)
+        if beep_t <= 0:
             print(f"{name:<20} (no beep, skip)")
             continue
-        beep_t = float(beeps[0]["t"])
         ref_times = get_ref_times_for_video(vp, beep_t)
         if not ref_times:
             print(f"{name:<20} (no ref, skip)")
             continue
-        result = detect_shots(audio_path, fps, return_candidates=True)
+        result = detect_shots(audio_path, fps, return_candidates=True, use_cnn_only=args.cnn_only)
         if isinstance(result, tuple) and len(result) == 2:
             shots_audio, audio_candidates = result
         else:
@@ -107,10 +149,21 @@ def main():
             if recovered:
                 shots_audio = shots_audio + recovered
                 shots_audio.sort(key=lambda x: x["t"])
+        if args.threshold is not None:
+            shots_audio = [s for s in shots_audio if float(s.get("confidence", 0)) >= args.threshold]
+        if args.nms > 0:
+            shots_audio = non_maximum_suppression(shots_audio, time_window=args.nms)
+        if args.analyze_fp:
+            per_video_for_fp.append((ref_times, shots_audio, name))
         tp, fp, fn, p, r, f1 = evaluate_shots(ref_times, shots_audio)
         total_tp += tp
         total_fp += fp
         total_fn += fn
+        if args.analyze_fp and fp > 0:
+            fps_list = analyze_false_positives(ref_times, shots_audio, TOL)
+            if fps_list:
+                confs = [f["confidence"] for f in fps_list]
+                print(f"  -> FP conf: min={min(confs):.3f} max={max(confs):.3f} avg={np.mean(confs):.3f}")
         print(f"{name:<20} {len(ref_times):>4} {tp+fp:>4} {tp:>4} {fp:>4} {fn:>4} {p:>7.1%} {r:>7.1%} {f1:>7.1%}")
     print("-" * 80)
     if total_tp + total_fp + total_fn > 0:
@@ -118,7 +171,23 @@ def main():
         r_all = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
         f1_all = 2 * p_all * r_all / (p_all + r_all) if (p_all + r_all) > 0 else 0.0
         print(f"{'Total (pooled)':<20} {'':>4} {total_tp+total_fp:>4} {total_tp:>4} {total_fp:>4} {total_fn:>4} {p_all:>7.1%} {r_all:>7.1%} {f1_all:>7.1%}")
-    print("\n(Current threshold from calibrated_detector_params.json min_confidence_threshold)")
+    if args.analyze_fp and total_fp > 0 and per_video_for_fp:
+        all_fps = []
+        for ref_times, shots_audio, name in per_video_for_fp:
+            ref_list = [float(t) for t in ref_times]
+            for s in shots_audio:
+                t = float(s.get("t", 0))
+                if all(abs(t - rt) > TOL for rt in ref_list):
+                    all_fps.append({"confidence": float(s.get("confidence", 0)), "video": name})
+        if all_fps:
+            confs = [f["confidence"] for f in all_fps]
+            print(f"\n=== False Positive Analysis (total {len(all_fps)} FPs) ===")
+            print(f"  Avg confidence: {np.mean(confs):.3f}  Min: {np.min(confs):.3f}  Max: {np.max(confs):.3f}")
+            high = sum(1 for c in confs if c > 0.7)
+            med = sum(1 for c in confs if 0.4 <= c <= 0.7)
+            low = sum(1 for c in confs if c < 0.4)
+            print(f"  High (>0.7): {high}  Med (0.4-0.7): {med}  Low (<0.4): {low}")
+    print("\n(Threshold from calibrated_detector_params.json; use --threshold to override for sweep)")
 
 
 if __name__ == "__main__":

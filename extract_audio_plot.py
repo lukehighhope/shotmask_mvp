@@ -25,7 +25,9 @@ from detectors.shot_audio import (
 )
 from detectors.shot_logreg import train_logreg
 from detectors.shot_motion import detect_shots_from_motion_improved, detect_shots_from_motion_roi_auto
+from detectors.shot_energy import detect_shots_energy
 from reference_splits import ref_shot_times
+from ref_from_image import get_ref_times_for_video
 
 
 def run_calibration(audio_path, fps, ref_times, max_match_s=0.04):
@@ -626,12 +628,13 @@ def extract_audio(video, ffmpeg, output_audio="tmp/audio.wav", channels=1):
     return output_audio
 
 def plot_waveform_pillow(audio_path, output_image, beep_times=None,
-                         ref_shot_times=None, audio_shot_times=None, motion_shot_times=None):
+                         ref_shot_times=None, audio_shot_times=None, energy_shot_times=None):
     """Generate simplified waveform plot using Pillow (fallback). 
     beep_times: list of seconds to mark on x-axis.
     ref_shot_times: reference shot times for row 0.
     audio_shot_times: audio-detected shot times for row 1.
-    motion_shot_times: motion-detected shot times for row 2.
+    energy_shot_times: energy-threshold detected shots for row 3 (Energy Envelope with detections).
+    Row 2 is pure energy envelope with no detection markers.
     """
     # Read audio (keep stereo for Vegas-style)
     data, sr = sf.read(audio_path)
@@ -677,15 +680,15 @@ def plot_waveform_pillow(audio_path, output_image, beep_times=None,
     else:
         energy_display = smooth_energy
     
-    # Create image: 3 rows = Vegas-style (mono) + Amplitude + Energy; light gray bg
-    width, height = 1400, 1200
+    # Create image: 4 rows = Vegas + Amplitude + Energy (pure) + Energy (with detections); light gray bg
+    width, height = 1400, 1600
     bg_light_gray = (235, 235, 235)
     img = Image.new('RGB', (width, height), bg_light_gray)
     draw = ImageDraw.Draw(img)
     
     padding = 60
-    vegas_row_height = (height - 4 * padding) // 3
-    plot_height = (height - 4 * padding) // 3
+    vegas_row_height = (height - 5 * padding) // 4
+    plot_height = (height - 5 * padding) // 4
     plot_width = width - 2 * padding
     left, right = padding, padding + plot_width
     
@@ -724,6 +727,9 @@ def plot_waveform_pillow(audio_path, output_image, beep_times=None,
     
     # --- Row 1: Amplitude (line waveform) ---
     top1, bottom1 = padding * 2 + plot_height, padding * 2 + 2 * plot_height
+    # Row 2: pure energy (no markers); Row 3: energy + detection markers
+    top2_pure, bottom2_pure = padding * 3 + 2 * plot_height, padding * 3 + 3 * plot_height
+    top2, bottom2 = padding * 4 + 3 * plot_height, padding * 4 + 4 * plot_height
     mid_y1 = (top1 + bottom1) // 2
     for i in range(len(normalized) - 1):
         x1 = left + int(i * plot_width / len(normalized))
@@ -732,9 +738,14 @@ def plot_waveform_pillow(audio_path, output_image, beep_times=None,
         y2 = mid_y1 - int(normalized[i + 1] * plot_height // 2)
         draw.line([(x1, y1), (x2, y2)], fill='blue', width=1)
     
-    # --- Row 2: Energy envelope ---
-    top2, bottom2 = padding * 3 + 2 * plot_height, padding * 3 + 3 * plot_height
-    y_offset = padding * 3 + 2 * plot_height  # start of row 2
+    # --- Row 2: Pure energy envelope (no detection markers) ---
+    for i in range(len(normalized_energy) - 1):
+        x1 = left + int(i * plot_width / len(normalized_energy))
+        y1 = top2_pure + plot_height - int(normalized_energy[i] * plot_height)
+        x2 = left + int((i + 1) * plot_width / len(normalized_energy))
+        y2 = top2_pure + plot_height - int(normalized_energy[i + 1] * plot_height)
+        draw.line([(x1, y1), (x2, y2)], fill='red', width=2)
+    # --- Row 3: Energy envelope with detection markers ---
     for i in range(len(normalized_energy) - 1):
         x1 = left + int(i * plot_width / len(normalized_energy))
         y1 = top2 + plot_height - int(normalized_energy[i] * plot_height)
@@ -766,7 +777,16 @@ def plot_waveform_pillow(audio_path, output_image, beep_times=None,
             draw.line([(left - 4, y), (left + 4, y)], fill=axis_color, width=1)
             draw.text((left - 28, y - 6), label, fill='black', font=font_small)
     
-    # --- Axes Row 2 (Energy) ---
+    # --- Axes Row 2 (Pure energy) ---
+    draw.line([(left, bottom2_pure), (right, bottom2_pure)], fill=axis_color, width=axis_width)
+    draw.line([(left, top2_pure), (left, bottom2_pure)], fill=axis_color, width=axis_width)
+    for val, label in [(0, '0'), (0.5, '0.5'), (1, '1')]:
+        y = bottom2_pure - int(val * plot_height)
+        if top2_pure <= y <= bottom2_pure:
+            draw.line([(left - 4, y), (left + 4, y)], fill=axis_color, width=1)
+            draw.text((left - 28, y - 6), label, fill='black', font=font_small)
+    draw.text((8, top2_pure + plot_height // 2 - 40), 'Energy', fill='black', font=font_small)
+    # --- Axes Row 3 (Energy + detections) ---
     draw.line([(left, bottom2), (right, bottom2)], fill=axis_color, width=axis_width)
     draw.line([(left, top2), (left, bottom2)], fill=axis_color, width=axis_width)
     for val, label in [(0, '0'), (0.5, '0.5'), (1, '1')]:
@@ -780,9 +800,10 @@ def plot_waveform_pillow(audio_path, output_image, beep_times=None,
     draw.text((width // 2 - 180, 10), f'Audio Waveform - {os.path.basename(audio_path)}', fill='black', font=font)
     draw.text((left, top0 - 18), 'Vegas-style (envelope) - Reference Shots', fill='black', font=font_small)
     draw.text((left, top1 - 18), 'Amplitude (line) - Audio Detected Shots', fill='black', font=font_small)
-    draw.text((left, top2 - 18), 'Energy Envelope - Motion Detected Shots', fill='black', font=font_small)
+    draw.text((left, top2_pure - 18), 'Energy Envelope (no detection)', fill='black', font=font_small)
+    draw.text((left, top2 - 18), 'Energy Envelope - Energy Detected Shots (reference only, many false positives)', fill='black', font=font_small)
     
-    # X-axis label and time ticks (Time in s) for all three rows
+    # X-axis label and time ticks (Time in s) for all four rows
     def draw_time_axis(dr, left_x, plot_w, duration, y_baseline, fnt):
         dr.text((left_x + plot_w // 2 - 30, y_baseline + 2), 'Time (s)', fill='black', font=fnt)
         step = 5.0 if duration >= 15 else (2.0 if duration >= 6 else 1.0)
@@ -796,9 +817,10 @@ def plot_waveform_pillow(audio_path, output_image, beep_times=None,
     
     draw_time_axis(draw, left, plot_width, duration, bottom0 - 5, font_small)
     draw_time_axis(draw, left, plot_width, duration, bottom1 - 5, font_small)
+    draw_time_axis(draw, left, plot_width, duration, bottom2_pure - 5, font_small)
     draw_time_axis(draw, left, plot_width, duration, bottom2 - 5, font_small)
     
-    # Mark beep time(s) on x-axis: vertical line across all three plots
+    # Mark beep time(s) on x-axis: vertical line across all four plots
     if beep_times and duration > 0:
         beep_color = (0, 128, 0)  # green
         for t in beep_times:
@@ -838,36 +860,34 @@ def plot_waveform_pillow(audio_path, output_image, beep_times=None,
                     draw.line([(x-1, top1), (x-1, bottom1)], fill=audio_color, width=2)
                     draw.line([(x+1, top1), (x+1, bottom1)], fill=audio_color, width=2)
     
-    # Mark motion-detected shot times on row 2 (bright purple/magenta solid, thicker)
-    if motion_shot_times and duration > 0:
-        motion_color = (255, 0, 255)  # bright magenta for maximum visibility
-        for t in motion_shot_times:
+    # Mark energy-detected shot times on row 3 only (bright purple/magenta solid, thicker)
+    if energy_shot_times and duration > 0:
+        energy_color = (255, 0, 255)  # bright magenta for maximum visibility
+        for t in energy_shot_times:
             if 0 <= t <= duration:
                 x = left + int((t / duration) * plot_width)
-                # Draw very thick line (5 pixels wide)
-                draw.line([(x, top2), (x, bottom2)], fill=motion_color, width=5)
-                # Also draw surrounding lines for even better visibility
+                draw.line([(x, top2), (x, bottom2)], fill=energy_color, width=5)
                 if x > 1 and x < width - 2:
-                    draw.line([(x-1, top2), (x-1, bottom2)], fill=motion_color, width=2)
-                    draw.line([(x+1, top2), (x+1, bottom2)], fill=motion_color, width=2)
+                    draw.line([(x-1, top2), (x-1, bottom2)], fill=energy_color, width=2)
+                    draw.line([(x+1, top2), (x+1, bottom2)], fill=energy_color, width=2)
     
     # Save
     img.save(output_image)
     print(f"Waveform plot saved to: {output_image} (generated using Pillow)")
 
 def plot_waveform(audio_path, output_image=None, show_plot=True, beep_times=None, 
-                  ref_shot_times=None, audio_shot_times=None, motion_shot_times=None):
+                  ref_shot_times=None, audio_shot_times=None, energy_shot_times=None):
     """Generate waveform plot. 
     beep_times: list of seconds to mark on x-axis.
     ref_shot_times: reference shot times for ax0 (waveform 1).
     audio_shot_times: audio-detected shot times for ax1 (waveform 2).
-    motion_shot_times: motion-detected shot times for ax2 (waveform 3).
+    energy_shot_times: energy-threshold detected shots for ax3 (waveform 4). ax2 = pure energy, no markers.
     """
     if not HAS_MATPLOTLIB:
         if output_image:
             plot_waveform_pillow(audio_path, output_image, beep_times=beep_times,
                                 ref_shot_times=ref_shot_times, audio_shot_times=audio_shot_times,
-                                motion_shot_times=motion_shot_times)
+                                energy_shot_times=energy_shot_times)
         else:
             print("Warning: matplotlib not installed, use --output to specify output path")
         return None
@@ -903,8 +923,8 @@ def plot_waveform(audio_path, output_image=None, show_plot=True, beep_times=None
     energy_display = smooth_energy[::step]
     time_energy = time_axis[::step]
     
-    # Create figure: 3 rows = Vegas mono + Amplitude + Energy; light gray bg
-    fig, (ax0, ax1, ax2) = plt.subplots(3, 1, figsize=(14, 12))
+    # Create figure: 4 rows = Vegas + Amplitude + Energy (pure) + Energy (with detections); light gray bg
+    fig, (ax0, ax1, ax2, ax3) = plt.subplots(4, 1, figsize=(14, 16))
     bg_light_gray = '#ebebeb'
     fig.patch.set_facecolor(bg_light_gray)
     vegas_color = '#782d2d'  # dark reddish-brown
@@ -912,6 +932,7 @@ def plot_waveform(audio_path, output_image=None, show_plot=True, beep_times=None
     ax0.set_facecolor(bg_light_gray)
     ax1.set_facecolor('white')
     ax2.set_facecolor('white')
+    ax3.set_facecolor('white')
     # Row 0: fill between upper/lower envelope, zero at center
     ax0.fill_between(time_display, lower_display, upper_display, color=vegas_color, alpha=0.9)
     ax0.axhline(0, color='gray', linewidth=0.8)
@@ -941,33 +962,43 @@ def plot_waveform(audio_path, output_image=None, show_plot=True, beep_times=None
                 ax1.axvline(t, color='green', linestyle='--', linewidth=1.5, alpha=0.8)
                 ax1.annotate(f'beep {t:.2f}s', xy=(t, ax1.get_ylim()[1]), xytext=(t, ax1.get_ylim()[1] * 1.02),
                              fontsize=9, color='green', ha='center')
-    # Add audio-detected shot times (orange solid lines)
     if audio_shot_times:
         for t in audio_shot_times:
             if 0 <= t <= duration:
                 ax1.axvline(t, color='orange', linestyle='-', linewidth=1.2, alpha=0.7)
-    ax1.set_xlabel('Time (s)', fontsize=12)
     ax1.set_ylabel('Amplitude', fontsize=12)
     ax1.set_title('Amplitude (line) - Audio Detected Shots', fontsize=12, fontweight='bold')
     ax1.grid(True, alpha=0.3)
     ax1.set_xlim(0, duration)
+    ax1.set_xticklabels([])
     
-    # Row 2: Energy envelope
+    # Row 2: Pure energy envelope (no detection markers)
     ax2.plot(time_energy, energy_display, linewidth=0.8, color='red', alpha=0.7)
     if beep_times:
         for t in beep_times:
             if 0 <= t <= duration:
                 ax2.axvline(t, color='green', linestyle='--', linewidth=1.5, alpha=0.8)
-    # Add motion-detected shot times (purple solid lines)
-    if motion_shot_times:
-        for t in motion_shot_times:
-            if 0 <= t <= duration:
-                ax2.axvline(t, color='purple', linestyle='-', linewidth=1.2, alpha=0.7)
-    ax2.set_xlabel('Time (s)', fontsize=12)
     ax2.set_ylabel('Energy Envelope', fontsize=12)
-    ax2.set_title('Energy Envelope - Motion Detected Shots', fontsize=12, fontweight='bold')
+    ax2.set_title('Energy Envelope (no detection)', fontsize=12, fontweight='bold')
     ax2.grid(True, alpha=0.3)
     ax2.set_xlim(0, duration)
+    ax2.set_xticklabels([])
+    
+    # Row 3: Energy envelope with detection markers
+    ax3.plot(time_energy, energy_display, linewidth=0.8, color='red', alpha=0.7)
+    if beep_times:
+        for t in beep_times:
+            if 0 <= t <= duration:
+                ax3.axvline(t, color='green', linestyle='--', linewidth=1.5, alpha=0.8)
+    if energy_shot_times:
+        for t in energy_shot_times:
+            if 0 <= t <= duration:
+                ax3.axvline(t, color='purple', linestyle='-', linewidth=1.2, alpha=0.7)
+    ax3.set_xlabel('Time (s)', fontsize=12)
+    ax3.set_ylabel('Energy Envelope', fontsize=12)
+    ax3.set_title('Energy Envelope - Energy Detected Shots (reference only, many FPs)', fontsize=12, fontweight='bold')
+    ax3.grid(True, alpha=0.3)
+    ax3.set_xlim(0, duration)
     
     fig.suptitle(f'Audio Waveform - {os.path.basename(audio_path)}', fontsize=14, fontweight='bold', y=1.00)
     info_text = (
@@ -1008,7 +1039,7 @@ def plot_waveform(audio_path, output_image=None, show_plot=True, beep_times=None
     
     return fig
 
-def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=False, use_train_logreg=False):
+def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=False, use_train_logreg=False, no_viewers=True):
     ffmpeg = get_ffmpeg_cmd()
     if not ffmpeg:
         print("ffmpeg not detected, please install first.")
@@ -1020,24 +1051,60 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
     # Extract stereo for Vegas-style plot (real L/R)
     audio_stereo = extract_audio(video, ffmpeg, "tmp/audio_stereo.wav", channels=2)
     
-    # Detect beep and shot times from mono
+    # Beep: prefer same-folder *beep.txt (e.g. 1beep.txt for 1.mp4), else detect
     beep_times = None
+    video_dir = os.path.dirname(os.path.abspath(video))
+    video_base = os.path.splitext(os.path.basename(video))[0]
+    beep_txt = os.path.join(video_dir, video_base + "beep.txt")
+    if os.path.isfile(beep_txt):
+        try:
+            with open(beep_txt, "r", encoding="utf-8") as f:
+                line = f.readline().strip()
+                if line:
+                    beep_times = [float(line)]
+                    print(f"Beep time from {os.path.basename(beep_txt)}: {beep_times[0]:.4f}s")
+        except Exception:
+            pass
     shot_times = []
     ref_times = None
-    motion_shot_times = []
+    ref_times_for_plot = None  # only set when video has its own .txt/.jpg (no ref for test data)
+    energy_shot_times = []
     try:
         fps = get_fps_from_video(video)
-        if fps is not None:
+        if fps is not None and beep_times is None:
             beeps = detect_beeps(audio_mono, fps)
             beep_times = [b["t"] for b in beeps]
             if beep_times:
                 print(f"Beep time(s) for x-axis: {beep_times}")
-            if beep_times:
+        # When we have beep (from file or detect): get ref_times and run detector (row0=ref, row1=audio/CNN shots)
+        if fps is not None and beep_times:
+            ref_times = get_ref_times_for_video(video, float(beep_times[0]))
+            if not ref_times:
                 ref_times = ref_shot_times(beep_times[0])
-                if use_calibrate:
-                    run_calibration(audio_mono, fps, ref_times)
-                    return
-                if use_train_logreg:
+            # Only show reference on plot when this video has its own ref file (.txt/.jpg). Test data has no GT.
+            ref_times_for_plot = ref_times
+            if ref_times:
+                video_dir = os.path.dirname(os.path.abspath(video))
+                video_base = os.path.splitext(os.path.basename(video))[0]
+                has_ref_file = False
+                for base_try in (video_base, video_base.split("-")[0] if "-" in video_base else ""):
+                    if not base_try:
+                        continue
+                    if os.path.isfile(os.path.join(video_dir, base_try + ".txt")):
+                        has_ref_file = True
+                        break
+                    for ext in (".jpg", ".jpeg", ".JPG", ".JPEG"):
+                        if os.path.isfile(os.path.join(video_dir, base_try + ext)):
+                            has_ref_file = True
+                            break
+                    if has_ref_file:
+                        break
+                if not has_ref_file:
+                    ref_times_for_plot = None
+            if use_calibrate:
+                run_calibration(audio_mono, fps, ref_times)
+                return
+            if use_train_logreg:
                     # Train logistic regression on candidate features using ref times
                     # Build candidate features and feature context
                     MISS_WEIGHT = 4.5  # FN/miss weight for single-video high-recall training
@@ -1174,25 +1241,23 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
             shot_times = [s["t"] for s in shots]
             if shot_times:
                 print(f"Shot time(s) for envelope markers: {shot_times}")
-            if beep_times and ref_times is not None:
-                calibration_report(ref_times, shot_times)
+            if beep_times and ref_times_for_plot is not None:
+                calibration_report(ref_times_for_plot, shot_times)
             
-            # Detect motion shots from video
-            print("Detecting motion shots from video...")
+            # Energy-threshold detection (filter -> envelope > 0.3 = shot) for row 2
+            print("Detecting shots from energy envelope (threshold 0.3)...")
             try:
-                if beep_times and ref_times:
-                    # Use ref-guided motion detection
-                    motion_shots = detect_shots_from_motion_improved(
-                        video, fps, ref_shot_times=ref_times, method="diff"
-                    )
-                else:
-                    # Use standard motion detection
-                    motion_shots = detect_shots_from_motion_roi_auto(video, fps, method="diff")
-                motion_shot_times = [s["t"] for s in motion_shots]
-                if motion_shot_times:
-                    print(f"Motion-detected shot time(s): {len(motion_shot_times)} shots")
+                energy_shots = detect_shots_energy(
+                    audio_path=audio_mono,
+                    energy_threshold=0.3,
+                    min_dist_sec=0.08,
+                    t0_beep=float(beep_times[0]) if beep_times else None,
+                )
+                energy_shot_times = [s["t"] for s in energy_shots]
+                if energy_shot_times:
+                    print(f"Energy-detected shot time(s): {len(energy_shot_times)} shots")
             except Exception as e:
-                print(f"Motion detection skipped: {e}")
+                print(f"Energy detection skipped: {e}")
     except Exception as e:
         print(f"Beep/shot detection skipped: {e}")
     
@@ -1212,35 +1277,37 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
             return
     plot_waveform(audio_stereo, output_image, show_plot, 
                   beep_times=beep_times,
-                  ref_shot_times=ref_times if ref_times else None,
+                  ref_shot_times=ref_times_for_plot if ref_times_for_plot else None,
                   audio_shot_times=shot_times if shot_times else None,
-                  motion_shot_times=motion_shot_times if motion_shot_times else None)
+                  energy_shot_times=energy_shot_times if energy_shot_times else None)
     
-    out_dir = os.path.dirname(output_image)
-    name = os.path.splitext(os.path.basename(output_image))[0]
-    viewer_path = os.path.join(out_dir, name + "_viewer.html")
-    viewer_envelope_path = os.path.join(out_dir, name + "_viewer_envelope.html")
-    try:
-        # 数据轴同时传算法探测(shot_times)与参考(ref_shot_times)，用不同颜色绘制
-        wdata = get_waveform_data(
-            audio_stereo,
-            beep_times=beep_times,
-            shot_times=shot_times,
-            ref_shot_times=ref_times if ref_times is not None else [],
-        )
-        write_data_zoom_viewer_html(viewer_path, wdata)
-        write_data_zoom_viewer_envelope_only_html(viewer_envelope_path, wdata, video_path=video)
-    except Exception as e:
-        print(f"Data-zoom viewer skipped: {e}")
-        viewer_path = write_image_zoom_viewer_html(output_image) or ""
+    viewer_path = ""
+    viewer_envelope_path = ""
+    if not no_viewers and output_image:
+        out_dir = os.path.dirname(output_image)
+        name = os.path.splitext(os.path.basename(output_image))[0]
+        viewer_path = os.path.join(out_dir, name + "_viewer.html")
+        viewer_envelope_path = os.path.join(out_dir, name + "_viewer_envelope.html")
+        try:
+            wdata = get_waveform_data(
+                audio_stereo,
+                beep_times=beep_times,
+                shot_times=shot_times,
+                ref_shot_times=ref_times_for_plot if ref_times_for_plot is not None else [],
+            )
+            write_data_zoom_viewer_html(viewer_path, wdata)
+            write_data_zoom_viewer_envelope_only_html(viewer_envelope_path, wdata, video_path=video)
+        except Exception as e:
+            print(f"Data-zoom viewer skipped: {e}")
+            viewer_path = write_image_zoom_viewer_html(output_image) or ""
     
     print(f"\nDone!")
     print(f"  Audio (mono): {audio_mono}")
     print(f"  Audio (stereo): {audio_stereo}")
     print(f"  Waveform plot: {output_image}")
-    if viewer_path:
-        print(f"  Zoom viewer (3 rows): {viewer_path} (open in browser)")
-    if os.path.isfile(viewer_envelope_path):
+    if not no_viewers and viewer_path:
+        print(f"  Zoom viewer (waveform): {viewer_path} (open in browser)")
+    if not no_viewers and viewer_envelope_path and os.path.isfile(viewer_envelope_path):
         print(f"  Zoom viewer (envelope only): {viewer_envelope_path} (open in browser)")
 
 if __name__ == "__main__":
@@ -1251,9 +1318,11 @@ if __name__ == "__main__":
     parser.add_argument("--use-ref", action="store_true", help="Use reference shot times (training set only; for comparing to detector)")
     parser.add_argument("--calibrate", action="store_true", help="Tune detector on training set (1.mp4), save best params for new videos")
     parser.add_argument("--train-logreg", action="store_true", help="Train logistic regression on candidate features (requires beep/ref)")
+    parser.add_argument("--viewers", action="store_true", help="Generate zoom viewer and envelope+video HTML (default: off)")
     args = parser.parse_args()
     
     main(
         args.video, args.output, show_plot=not args.no_show,
-        use_ref=args.use_ref, use_calibrate=args.calibrate, use_train_logreg=args.train_logreg
+        use_ref=args.use_ref, use_calibrate=args.calibrate, use_train_logreg=args.train_logreg,
+        no_viewers=not args.viewers,
     )

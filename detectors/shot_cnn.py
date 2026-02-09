@@ -68,13 +68,19 @@ def mel_at_time(audio_1d, sr, t_sec, n_mels=MEL_N_MELS, hop=MEL_HOP, n_fft=MEL_N
     return mel[np.newaxis, ...].astype(np.float32)  # (1, n_mels, n_frames)
 
 
-def build_cnn_model(n_mels=MEL_N_MELS, n_frames=32, num_classes=1):
-    """构建小 2D CNN：输入 (1, n_mels, n_frames)，输出 1 个 logit（二分类）。"""
+def build_cnn_model(n_mels=MEL_N_MELS, n_frames=32, num_classes=1, arch="default"):
+    """
+    构建 2D CNN：输入 (1, n_mels, n_frames)，输出 1 个 logit（二分类）。
+    arch: "default" = 小网络 (32->64->64); "deeper" = 更深+Dropout (32->64->128, fc 128->64->1)。
+    """
     try:
         import torch
         import torch.nn as nn
     except ImportError:
         return None
+
+    if arch == "deeper":
+        return _build_cnn_deeper(num_classes)
 
     class GunshotCNN(nn.Module):
         def __init__(self):
@@ -96,12 +102,60 @@ def build_cnn_model(n_mels=MEL_N_MELS, n_frames=32, num_classes=1):
             self.fc = nn.Linear(64, num_classes)
 
         def forward(self, x):
-            # x: (B, 1, n_mels, n_frames)
             h = self.conv(x)
             h = h.view(h.size(0), -1)
             return self.fc(h).squeeze(-1)
 
     return GunshotCNN()
+
+
+def _build_cnn_deeper(num_classes=1):
+    """更深 CNN：3 个 block (32->64->128)，Dropout2d + fc 128->64->1。"""
+    import torch.nn as nn
+
+    class GunshotCNNDeeper(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Sequential(
+                nn.Conv2d(1, 32, 3, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.Conv2d(32, 32, 3, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Dropout2d(0.1),
+                nn.Conv2d(32, 64, 3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, 3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Dropout2d(0.2),
+                nn.Conv2d(64, 128, 3, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.Conv2d(128, 128, 3, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Dropout2d(0.3),
+                nn.AdaptiveAvgPool2d(1),
+            )
+            self.fc = nn.Sequential(
+                nn.Linear(128, 64),
+                nn.ReLU(),
+                nn.Dropout(0.5),
+                nn.Linear(64, num_classes),
+            )
+
+        def forward(self, x):
+            h = self.conv(x)
+            h = h.view(h.size(0), -1)
+            return self.fc(h).squeeze(-1)
+
+    return GunshotCNNDeeper()
 
 
 def load_cnn_gunshot(path=None):
@@ -122,10 +176,11 @@ def load_cnn_gunshot(path=None):
         if not path or not os.path.isfile(path):
             return None, None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_cnn_model()
+    state = torch.load(path, map_location=device)
+    arch = state.get("arch", "default") if isinstance(state, dict) else "default"
+    model = build_cnn_model(arch=arch)
     if model is None:
         return None, None
-    state = torch.load(path, map_location=device)
     if isinstance(state, dict) and "model_state_dict" in state:
         model.load_state_dict(state["model_state_dict"])
     else:

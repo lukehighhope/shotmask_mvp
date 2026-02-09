@@ -302,6 +302,7 @@ def detect_shots(
     use_improved=True,
     export_diagnostics=False,
     return_candidates=False,
+    use_cnn_only=None,
 ):
     """
     Detect gunshot times from audio using improved two-stage multi-feature approach.
@@ -354,6 +355,7 @@ def detect_shots(
             except Exception:
                 pass
         cnn_fusion_weight = float(cal.get("cnn_fusion_weight", 0.5))  # final_conf = (1-w)*logreg + w*cnn
+        use_cnn_only_flag = use_cnn_only if use_cnn_only is not None else bool(cal.get("use_cnn_only", False))
 
         return detect_shots_improved(
             data, sr, fps,
@@ -374,6 +376,7 @@ def detect_shots(
             cnn_model=cnn_model,
             cnn_device=cnn_device,
             cnn_fusion_weight=cnn_fusion_weight,
+            use_cnn_only=use_cnn_only_flag,
         )
     
     # Legacy method (original implementation)
@@ -538,6 +541,7 @@ def detect_shots_improved(
     cnn_model=None,
     cnn_device=None,
     cnn_fusion_weight=0.5,
+    use_cnn_only=False,
 ):
     """
     Improved two-stage gunshot detection with multi-feature fusion.
@@ -553,6 +557,7 @@ def detect_shots_improved(
         min_confidence_threshold: Filter final shots by confidence (float; None disables). Not a raw-score threshold.
         scene_config: Preset for score_weights: "indoor"|"outdoor"|"near"|"far"|"default".
         logreg_model: Optional logistic regression model dict (weights/bias/mean/std).
+        use_cnn_only: If True and cnn_model set, score candidates with CNN only (no LogReg); confidence = CNN prob.
         return_candidates: If True, return (shots, candidate_features).
     """
     # STFT parameters; n_frames is the single source of truth for frame axis
@@ -852,9 +857,21 @@ def detect_shots_improved(
         candidate_scores.append(score)
         feat["score"] = score
     
-    # If logistic regression model is provided, use it to score candidates.
-    # (Keep as comment: uncommented "use it to score candidates" would cause SyntaxError.)
-    if logreg_model and len(candidate_features) > 0:
+    # Score candidates: CNN-only, or LogReg (+ optional fingerprint bonus + normalization)
+    if use_cnn_only and cnn_model is not None and cnn_device is not None and len(candidate_features) > 0:
+        try:
+            from .shot_cnn import mel_at_time, predict_proba_one
+            candidate_scores = []
+            for feat in candidate_features:
+                mel = mel_at_time(data, sr, float(feat["t"]))
+                p = predict_proba_one(cnn_model, cnn_device, mel)
+                candidate_scores.append(float(p))
+                feat["score"] = float(p)
+                feat["confidence"] = float(p)
+        except Exception:
+            use_cnn_only = False
+            candidate_scores = [0.0] * len(candidate_features)
+    elif logreg_model and len(candidate_features) > 0:
         n_w = len(logreg_model.get("weights", []))
         X = []
         for i, feat in enumerate(candidate_features):
@@ -875,31 +892,35 @@ def detect_shots_improved(
         candidate_scores = probs.tolist()
         for i, feat in enumerate(candidate_features):
             feat["score"] = float(candidate_scores[i])
+    else:
+        candidate_scores = [0.0] * len(candidate_features)
 
-    # Fingerprint v2: soft scoring (add/subtract points), not hard gate
-    FINGERPRINT_W_ATTACK = 0.08
-    FINGERPRINT_W_HIGH = 0.05
-    FINGERPRINT_W_LOW = 0.05
-    for i, feat in enumerate(candidate_features):
-        attack_n = np.clip(feat.get("attack_norm", 0), 0, 1)
-        high_r = np.clip(feat.get("E_high_ratio", 0), 0, 1)
-        low_r = np.clip(feat.get("E_low_ratio", 0), 0, 1)
-        bonus = FINGERPRINT_W_ATTACK * attack_n + FINGERPRINT_W_HIGH * high_r + FINGERPRINT_W_LOW * low_r
-        candidate_scores[i] = candidate_scores[i] + bonus
-        feat["score"] = float(candidate_scores[i])
-    
+    if not use_cnn_only:
+        # Fingerprint v2: soft scoring (add/subtract points), not hard gate
+        FINGERPRINT_W_ATTACK = 0.08
+        FINGERPRINT_W_HIGH = 0.05
+        FINGERPRINT_W_LOW = 0.05
+        for i, feat in enumerate(candidate_features):
+            attack_n = np.clip(feat.get("attack_norm", 0), 0, 1)
+            high_r = np.clip(feat.get("E_high_ratio", 0), 0, 1)
+            low_r = np.clip(feat.get("E_low_ratio", 0), 0, 1)
+            bonus = FINGERPRINT_W_ATTACK * attack_n + FINGERPRINT_W_HIGH * high_r + FINGERPRINT_W_LOW * low_r
+            candidate_scores[i] = candidate_scores[i] + bonus
+            feat["score"] = float(candidate_scores[i])
+        # Normalized absolute score per candidate (0–1) for product-friendly confidence
+        scores_arr = np.array(candidate_scores, dtype=np.float64)
+        med_s = np.median(scores_arr)
+        mad_s = np.median(np.abs(scores_arr - med_s)) + 1e-9
+        z = (scores_arr - med_s) / (mad_s * 1.4826 + 1e-9)
+        score_norm = 1.0 / (1.0 + np.exp(-np.clip(z, -5, 5)))
+        for i, feat in enumerate(candidate_features):
+            feat["confidence"] = float(score_norm[i])
+    else:
+        score_norm = np.array([f["confidence"] for f in candidate_features], dtype=np.float64)
+
     def _sigmoid(x):
         return 1.0 / (1.0 + np.exp(-x))
-    
-    # Normalized absolute score per candidate (0–1) for product-friendly confidence
-    scores_arr = np.array(candidate_scores, dtype=np.float64)
-    med_s = np.median(scores_arr)
-    mad_s = np.median(np.abs(scores_arr - med_s)) + 1e-9
-    z = (scores_arr - med_s) / (mad_s * 1.4826 + 1e-9)
-    score_norm = 1.0 / (1.0 + np.exp(-np.clip(z, -5, 5)))
-    for i, feat in enumerate(candidate_features):
-        feat["confidence"] = float(score_norm[i])
-    
+
     # ========== Clustering & Selection ==========
     candidate_times = [f["t"] for f in candidate_features]
     if use_dynamic_cluster and len(candidate_times) >= 3:
@@ -926,10 +947,13 @@ def detect_shots_improved(
             continue
 
         cluster_scores = [candidate_scores[i] for i in cluster]
-        margin = candidate_scores[best_idx_in_cluster] - np.median(cluster_scores)
-        confidence_margin = float(_sigmoid(margin / 0.15))
-        confidence_absolute = float(score_norm[best_idx_in_cluster])
-        confidence = 0.5 * confidence_absolute + 0.5 * confidence_margin
+        if use_cnn_only:
+            confidence = float(candidate_features[best_idx_in_cluster]["confidence"])
+        else:
+            margin = candidate_scores[best_idx_in_cluster] - np.median(cluster_scores)
+            confidence_margin = float(_sigmoid(margin / 0.15))
+            confidence_absolute = float(score_norm[best_idx_in_cluster])
+            confidence = 0.5 * confidence_absolute + 0.5 * confidence_margin
 
         shots.append({
             "t": round(float(best_candidate["t"]), 4),
@@ -996,9 +1020,8 @@ def detect_shots_improved(
             shots.sort(key=lambda x: x["t"])
     diag["rate_cap_dropped"] = n_before_rate_cap - len(shots)
 
-    # Optional: fuse CNN-on-mel score with LogReg confidence BEFORE threshold filter,
-    # so keep/drop decision uses the fused score (actually uses CNN).
-    if cnn_model is not None and cnn_device is not None and len(shots) > 0 and 0 < cnn_fusion_weight <= 1:
+    # Optional: fuse CNN-on-mel score with LogReg confidence BEFORE threshold filter (skip when use_cnn_only).
+    if not use_cnn_only and cnn_model is not None and cnn_device is not None and len(shots) > 0 and 0 < cnn_fusion_weight <= 1:
         try:
             from .shot_cnn import mel_at_time, predict_proba_one
             for s in shots:

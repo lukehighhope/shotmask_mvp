@@ -13,7 +13,6 @@ import subprocess
 import numpy as np
 import soundfile as sf
 
-from detectors.beep import detect_beeps
 from detectors.shot_audio import (
     detect_shots_improved,
     compute_feature_at_time,
@@ -21,7 +20,7 @@ from detectors.shot_audio import (
     CALIBRATED_PARAMS_FILENAME,
 )
 from detectors.shot_logreg import train_logreg
-from ref_from_image import get_ref_times_for_video
+from ref_from_image import get_ref_times_for_video, get_beep_t_for_video
 
 
 def get_ffmpeg():
@@ -218,11 +217,10 @@ def main():
         data, sr = sf.read(audio_path)
         if data.ndim > 1:
             data = np.mean(data, axis=1)
-        beeps = detect_beeps(audio_path, fps)
-        if not beeps:
-            print("  No beep, skip")
+        beep_t = get_beep_t_for_video(vp, audio_path, fps)
+        if beep_t <= 0:
+            print("  No beep (*beep.txt / overrides / detect), skip")
             continue
-        beep_t = float(beeps[0]["t"])
         ref_times = get_ref_times_for_video(vp, beep_t)
         if not ref_times:
             print("  No ref times, skip")

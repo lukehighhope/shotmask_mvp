@@ -29,13 +29,26 @@ def _try_pytesseract(image_path, psm=6):
 
 
 def parse_ref_splits_from_txt(txt_path):
-    """Parse splits from a sidecar .txt: one number per line or space-separated."""
+    """Parse splits from a sidecar .txt: one number per line or space-separated. Returns list of floats."""
     if not os.path.isfile(txt_path):
         return None
     with open(txt_path, "r", encoding="utf-8") as f:
         raw = f.read()
     numbers = re.findall(r"\d+\.\d+", raw)
     return [float(x) for x in numbers] if numbers else None
+
+
+def _looks_like_absolute_times(numbers):
+    """True if numbers look like absolute timestamps (e.g. 2.13, 2.69, 3.18) rather than splits."""
+    if not numbers or len(numbers) < 2:
+        return False
+    arr = [float(x) for x in numbers]
+    if min(arr) < 0.2:
+        return False
+    for i in range(1, len(arr)):
+        if arr[i] < arr[i - 1] - 0.01:
+            return False
+    return True
 
 
 def parse_ref_splits_from_image_ocr_only(jpg_path):
@@ -80,6 +93,43 @@ def ref_shot_times_from_splits(beep_t, splits):
     return (beep_t + np.cumsum(splits)).tolist()
 
 
+def get_beep_t_for_video(video_path, audio_path, fps):
+    """
+    Return beep time (seconds). Priority:
+    1) Same-folder {key}beep.txt (e.g. S1beep.txt, 1beep.txt) first line;
+    2) beep_overrides.json with key S1/1/...;
+    3) detect_beeps(audio_path, fps).
+    """
+    try:
+        from detectors.beep import detect_beeps
+    except Exception:
+        return 0.0
+    dirname = os.path.dirname(os.path.abspath(video_path))
+    base = os.path.splitext(os.path.basename(video_path))[0]
+    key = base.split("-")[0] if "-" in base else base
+    beep_txt = os.path.join(dirname, key + "beep.txt")
+    if os.path.isfile(beep_txt):
+        try:
+            with open(beep_txt, "r", encoding="utf-8") as f:
+                line = f.readline().strip()
+            if line:
+                return float(line)
+        except Exception:
+            pass
+    override_path = os.path.join(dirname, "beep_overrides.json")
+    if os.path.isfile(override_path):
+        try:
+            import json
+            with open(override_path, "r", encoding="utf-8") as f:
+                overrides = json.load(f)
+            if key in overrides:
+                return float(overrides[key])
+        except Exception:
+            pass
+    beeps = detect_beeps(audio_path, fps)
+    return float(beeps[0]["t"]) if beeps else 0.0
+
+
 def get_ref_times_for_video(video_path, beep_t, ref_image_path=None):
     """
     Get reference shot times for a video.
@@ -105,8 +155,17 @@ def get_ref_times_for_video(video_path, beep_t, ref_image_path=None):
         if splits:
             return ref_shot_times_from_splits(beep_t, splits)
     if dirname and base:
-        txt_path = os.path.join(dirname, base + ".txt")
-        splits = parse_ref_splits_from_txt(txt_path)
-        if splits:
-            return ref_shot_times_from_splits(beep_t, splits)
+        for base_try in (base, base.split("-")[0] if "-" in base else None):
+            if not base_try:
+                continue
+            txt_path = os.path.join(dirname, base_try + ".txt")
+            numbers = parse_ref_splits_from_txt(txt_path)
+            if numbers:
+                if _looks_like_absolute_times(numbers):
+                    arr = [float(x) for x in numbers]
+                    # If beep detected and first ref is before beep, treat txt as "seconds since beep" (e.g. outdoor S1-S8)
+                    if beep_t > 0 and arr[0] < beep_t:
+                        return [beep_t + x for x in arr]
+                    return arr
+                return ref_shot_times_from_splits(beep_t, numbers)
     return ref_shot_times(beep_t)
