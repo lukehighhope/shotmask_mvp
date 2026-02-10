@@ -314,6 +314,7 @@ def detect_shots(
     export_diagnostics=False,
     return_candidates=False,
     use_cnn_only=None,
+    use_ast_gunshot=None,
 ):
     """
     Detect gunshot times from audio using improved two-stage multi-feature approach.
@@ -359,7 +360,14 @@ def detect_shots(
         scene_config = cal.get("scene_config", None)  # indoor/outdoor/near/far
         use_mfcc = cal.get("use_mfcc", False)  # optional MFCC term in scoring (requires librosa)
         cnn_model, cnn_device = None, None
-        if cal.get("cnn_gunshot_path"):
+        ast_model, ast_device = None, None
+        if cal.get("ast_gunshot_path"):
+            try:
+                from .shot_ast import load_ast_gunshot
+                ast_model, ast_device = load_ast_gunshot(cal.get("ast_gunshot_path"))
+            except Exception:
+                pass
+        if (cnn_model is None or cnn_device is None) and cal.get("cnn_gunshot_path"):
             try:
                 from .shot_cnn import load_cnn_gunshot
                 cnn_model, cnn_device = load_cnn_gunshot(cal.get("cnn_gunshot_path"))
@@ -367,6 +375,7 @@ def detect_shots(
                 pass
         cnn_fusion_weight = float(cal.get("cnn_fusion_weight", 0.5))  # final_conf = (1-w)*logreg + w*cnn
         use_cnn_only_flag = use_cnn_only if use_cnn_only is not None else bool(cal.get("use_cnn_only", False))
+        use_ast_gunshot_flag = use_ast_gunshot if use_ast_gunshot is not None else bool(cal.get("use_ast_gunshot", bool(cal.get("ast_gunshot_path") and not cal.get("cnn_gunshot_path"))))
 
         return detect_shots_improved(
             data, sr, fps,
@@ -386,6 +395,9 @@ def detect_shots(
             use_mfcc=use_mfcc,
             cnn_model=cnn_model,
             cnn_device=cnn_device,
+            ast_model=ast_model,
+            ast_device=ast_device,
+            use_ast_gunshot=use_ast_gunshot_flag,
             cnn_fusion_weight=cnn_fusion_weight,
             use_cnn_only=use_cnn_only_flag,
         )
@@ -551,6 +563,9 @@ def detect_shots_improved(
     use_mfcc=False,
     cnn_model=None,
     cnn_device=None,
+    ast_model=None,
+    ast_device=None,
+    use_ast_gunshot=False,
     cnn_fusion_weight=0.5,
     use_cnn_only=False,
 ):
@@ -868,17 +883,31 @@ def detect_shots_improved(
         candidate_scores.append(score)
         feat["score"] = score
     
-    # Score candidates: CNN-only, or LogReg (+ optional fingerprint bonus + normalization)
-    if use_cnn_only and cnn_model is not None and cnn_device is not None and len(candidate_features) > 0:
+    # Score candidates: AST/CNN-only, or LogReg (+ optional fingerprint bonus + normalization)
+    if use_cnn_only and len(candidate_features) > 0 and (ast_model is not None or cnn_model is not None):
         try:
-            from .shot_cnn import mel_at_time, predict_proba_one
-            candidate_scores = []
-            for feat in candidate_features:
-                mel = mel_at_time(data, sr, float(feat["t"]))
-                p = predict_proba_one(cnn_model, cnn_device, mel)
-                candidate_scores.append(float(p))
-                feat["score"] = float(p)
-                feat["confidence"] = float(p)
+            from .shot_cnn import mel_at_time
+            if use_ast_gunshot and ast_model is not None and ast_device is not None:
+                from .shot_ast import predict_proba_one as ast_predict_one
+                candidate_scores = []
+                for feat in candidate_features:
+                    mel = mel_at_time(data, sr, float(feat["t"]))
+                    p = ast_predict_one(ast_model, ast_device, mel)
+                    candidate_scores.append(float(p))
+                    feat["score"] = float(p)
+                    feat["confidence"] = float(p)
+            elif cnn_model is not None and cnn_device is not None:
+                from .shot_cnn import predict_proba_one
+                candidate_scores = []
+                for feat in candidate_features:
+                    mel = mel_at_time(data, sr, float(feat["t"]))
+                    p = predict_proba_one(cnn_model, cnn_device, mel)
+                    candidate_scores.append(float(p))
+                    feat["score"] = float(p)
+                    feat["confidence"] = float(p)
+            else:
+                use_cnn_only = False
+                candidate_scores = [0.0] * len(candidate_features)
         except Exception:
             use_cnn_only = False
             candidate_scores = [0.0] * len(candidate_features)

@@ -3,6 +3,12 @@ Parse reference shot splits from a JPG image (e.g. 1.jpg = ref for 1.mp4).
 Image format: lines of decimal numbers (beep→1st shot, then inter-shot intervals);
 optional last line with "0.56 (29) AMG 95D3" where (N) = total shot count.
 
+Naming convention (same folder as *.mp4):
+  *.mp4       = main shooting video
+  *cali.txt   = calibration splits (preferred over *.txt when present); ref_times = beep_t + cumsum(splits)
+  *.txt       = split data (intervals from beep), one number per line; used when *cali.txt absent
+  *beep.txt   = beep time relative to video start (seconds), single line
+
 Returns list of floats = splits; ref_times = beep_t + np.cumsum(splits).
 Requires: pip install pytesseract Pillow; Tesseract-OCR installed on system.
 """
@@ -95,17 +101,18 @@ def ref_shot_times_from_splits(beep_t, splits):
 
 def get_beep_t_for_video(video_path, audio_path, fps):
     """
-    Return beep time (seconds). Priority:
-    1) Same-folder {key}beep.txt (e.g. S1beep.txt, 1beep.txt) first line;
-    2) beep_overrides.json with key S1/1/...;
-    3) detect_beeps(audio_path, fps).
+    Return beep time in seconds (relative to video start).
+    Priority: 1) same-folder *beep.txt (first line); 2) beep_overrides.json; 3) detect_beeps().
+    *beep.txt = beep time relative to video start (one number per file).
+    Paths: video_path is normalized to absolute so *beep.txt is always looked up next to the video file.
     """
     try:
         from detectors.beep import detect_beeps
     except Exception:
         return 0.0
-    dirname = os.path.dirname(os.path.abspath(video_path))
-    base = os.path.splitext(os.path.basename(video_path))[0]
+    video_path = os.path.abspath(os.path.normpath(video_path)) if video_path else ""
+    dirname = os.path.dirname(video_path)
+    base = os.path.splitext(os.path.basename(video_path))[0] if video_path else ""
     key = base.split("-")[0] if "-" in base else base
     beep_txt = os.path.join(dirname, key + "beep.txt")
     if os.path.isfile(beep_txt):
@@ -130,42 +137,59 @@ def get_beep_t_for_video(video_path, audio_path, fps):
     return float(beeps[0]["t"]) if beeps else 0.0
 
 
-def get_ref_times_for_video(video_path, beep_t, ref_image_path=None):
+def get_ref_times_and_source(video_path, beep_t, ref_image_path=None):
     """
-    Get reference shot times for a video.
-    - If ref_image_path is given and parseable, use splits from that image (or same-base .txt).
-    - Else look for same-base jpg next to video (e.g. 1.mp4 -> 1.jpg), then parse image or base.txt.
-    - Else try same-base .txt (e.g. 1.mp4 -> 1.txt) with one number per line or space-separated.
-    - Else use global reference_splits.ref_shot_times(beep_t).
+    Get reference shot times and a short source description.
+    Only uses same-name .txt for splits (no same-name .jpg). ref = beep_t + cumsum(splits).
+    Returns (ref_times_list, source_str).
+    Paths: video_path is normalized to absolute so *.txt is always looked up next to the video file.
     """
     from reference_splits import ref_shot_times
 
-    dirname = os.path.dirname(os.path.abspath(video_path)) if video_path else ""
+    video_path = os.path.abspath(os.path.normpath(video_path)) if video_path else ""
+    dirname = os.path.dirname(video_path)
     base = os.path.splitext(os.path.basename(video_path))[0] if video_path else ""
+    base_try = base.split("-")[0] if "-" in base else base
 
-    jpg = ref_image_path
-    if not jpg and video_path and dirname:
-        for ext in (".jpg", ".jpeg", ".JPG", ".JPEG"):
-            candidate = os.path.join(dirname, base + ext)
-            if os.path.isfile(candidate):
-                jpg = candidate
-                break
-    if jpg:
-        splits = parse_ref_splits_from_image(jpg)
-        if splits:
-            return ref_shot_times_from_splits(beep_t, splits)
-    if dirname and base:
-        for base_try in (base, base.split("-")[0] if "-" in base else None):
-            if not base_try:
-                continue
-            txt_path = os.path.join(dirname, base_try + ".txt")
-            numbers = parse_ref_splits_from_txt(txt_path)
+    # Only same-name .txt (no same-name .jpg). If ref_image_path given, use its same-base .txt when it's an image.
+    if ref_image_path and os.path.isfile(ref_image_path):
+        if ref_image_path.lower().endswith((".jpg", ".jpeg")) or not ref_image_path.lower().endswith(".txt"):
+            splits = parse_ref_splits_from_image(ref_image_path)
+            if splits:
+                txt_path = os.path.splitext(ref_image_path)[0] + ".txt"
+                src = "{} (splits)".format(os.path.basename(txt_path))
+                return ref_shot_times_from_splits(beep_t, splits), src
+        else:
+            numbers = parse_ref_splits_from_txt(ref_image_path)
             if numbers:
                 if _looks_like_absolute_times(numbers):
                     arr = [float(x) for x in numbers]
-                    # If beep detected and first ref is before beep, treat txt as "seconds since beep" (e.g. outdoor S1-S8)
                     if beep_t > 0 and arr[0] < beep_t:
-                        return [beep_t + x for x in arr]
-                    return arr
-                return ref_shot_times_from_splits(beep_t, numbers)
-    return ref_shot_times(beep_t)
+                        return [beep_t + x for x in arr], "{} (absolute since beep)".format(os.path.basename(ref_image_path))
+                    return arr, "{} (absolute)".format(os.path.basename(ref_image_path))
+                return ref_shot_times_from_splits(beep_t, numbers), "{} (splits)".format(os.path.basename(ref_image_path))
+    if dirname and base:
+        for b in (base, base_try) if base_try != base else (base,):
+            cali_path = os.path.join(dirname, b + "cali.txt")
+            txt_path = os.path.join(dirname, b + ".txt")
+            path_to_try = cali_path if os.path.isfile(cali_path) else txt_path
+            numbers = parse_ref_splits_from_txt(path_to_try)
+            if numbers:
+                if _looks_like_absolute_times(numbers):
+                    arr = [float(x) for x in numbers]
+                    if beep_t > 0 and arr[0] < beep_t:
+                        return [beep_t + x for x in arr], "{} (absolute since beep)".format(os.path.basename(path_to_try))
+                    return arr, "{} (absolute)".format(os.path.basename(path_to_try))
+                return ref_shot_times_from_splits(beep_t, numbers), "{} (splits)".format(os.path.basename(path_to_try))
+    ref = ref_shot_times(beep_t)
+    return ref, "reference_splits(beep)"
+
+def get_ref_times_for_video(video_path, beep_t, ref_image_path=None):
+    """
+    Get reference shot times. Only same-name .txt for splits (no same-name .jpg). ref = beep_t + cumsum(splits).
+    - If ref_image_path given: use that file (image -> same-base .txt, or .txt directly).
+    - Else same-base .txt only (e.g. 2.mp4 -> 2.txt).
+    - Else global reference_splits.ref_shot_times(beep_t).
+    """
+    ref, _ = get_ref_times_and_source(video_path, beep_t, ref_image_path)
+    return ref

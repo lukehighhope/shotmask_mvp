@@ -1,5 +1,6 @@
 """
-用 01032026 五段视频的真值(1.txt~5.txt)，从候选处截取 Mel 谱图，训练小 CNN 做枪声二分类。
+用 01032026 五段视频的真值，从候选处截取 Mel 谱图，训练小 CNN 做枪声二分类。
+Ref 优先：同目录 *cali.txt（校准 shot 时刻），若无则用 *.txt。
 网络从谱图学习特征，替代/辅助手工特征+LogReg。
 
 提高准确度：多训几轮(--epochs)、开数据增强(--augment)、学习率衰减(默认开)、继续训练(--resume)。
@@ -22,7 +23,7 @@ from detectors.shot_cnn import (
     MEL_N_MELS,
     MEL_HOP,
 )
-from ref_from_image import get_ref_times_for_video, get_beep_t_for_video
+from ref_from_image import get_ref_times_and_source, get_beep_t_for_video
 from train_logreg_multivideo import (
     get_ffmpeg,
     get_ffprobe,
@@ -35,7 +36,7 @@ WINDOW_AFTER = 0.08
 
 
 def build_mel_dataset(folder, cal_cfg=None):
-    """对 folder 下每个 mp4：取 ref（同目录 .txt，支持绝对时间或 splits）、候选，对每个候选截 Mel 并标 0/1。返回 (mels, labels)."""
+    """对 folder 下每个 mp4：取 ref（同目录 *cali.txt 优先，否则 *.txt）、候选，对每个候选截 Mel 并标 0/1。返回 (mels, labels)."""
     folder = os.path.abspath(folder)
     cal_cfg = cal_cfg or load_calibrated_params() or {}
     mels, labels = [], []
@@ -60,10 +61,11 @@ def build_mel_dataset(folder, cal_cfg=None):
         if beep_t <= 0:
             print("  No beep (and no override), skip")
             continue
-        ref_times = get_ref_times_for_video(vp, beep_t)
+        ref_times, ref_src = get_ref_times_and_source(vp, beep_t)
         if not ref_times:
-            print("  No ref .txt, skip")
+            print("  No ref (*cali.txt / *.txt), skip")
             continue
+        print("  Ref:", ref_src)
         override_path = os.path.join(os.path.dirname(vp), "beep_overrides.json")
         if os.path.isfile(override_path):
             print(f"  Beep t={beep_t:.2f}s (from beep_overrides.json)")
