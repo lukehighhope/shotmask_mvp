@@ -341,8 +341,11 @@ resize();
 
 
 def write_data_zoom_viewer_envelope_only_html(html_path, data, video_path=None):
-    """Write HTML data-zoom viewer with only Vegas-style envelope. If video_path, add video player on top and sync with envelope time."""
+    """Write HTML data-zoom viewer with only Vegas-style envelope. If video_path, add video player on top and sync with envelope time.
+    Uses video stream start_time so waveform time 0 aligns with first frame (many MP4 have e.g. start_time=0.012)."""
     import json
+    data = dict(data)
+    data.setdefault("video_start_time", get_video_start_time(video_path) if video_path and os.path.isfile(video_path) else 0.0)
     data_json = json.dumps(data)
     video_src = ""
     video_ui = ""
@@ -377,11 +380,11 @@ if(vid){{
 if(btnPlay&&vid){{ btnPlay.addEventListener('click',function(){{ if(vid.paused){{ vid.play(); btnPlay.textContent='Pause'; }}else{{ vid.pause(); btnPlay.textContent='Play'; }} }}); }}
 """
         video_js_draw = """
- if(typeof playheadT !== 'undefined'&&vid){ var pt=playheadT; if(pt>=t0&&pt<=t1){ var px=pad+(pt-t0)/(t1-t0)*plotW; ctx.strokeStyle='#0066cc'; ctx.lineWidth=2; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(px,pad); ctx.lineTo(px,H-pad); ctx.stroke(); ctx.setLineDash([]); }}
+ if(typeof playheadT !== 'undefined'&&vid){ var vst=(D.video_start_time!=null?D.video_start_time:0); var pt=playheadT-vst; if(pt>=t0&&pt<=t1){ var px=pad+(pt-t0)/(t1-t0)*plotW; ctx.strokeStyle='#0066cc'; ctx.lineWidth=2; ctx.setLineDash([4,4]); ctx.beginPath(); ctx.moveTo(px,pad); ctx.lineTo(px,H-pad); ctx.stroke(); ctx.setLineDash([]); }}
 """
         video_js_events = """
 var wasDrag=drag; drag=0; if(wasDrag) return;
-if(vid&&c){{ var rect=c.getBoundingClientRect(); var rx=e.clientX-rect.left; var plotW=c.width-2*pad; if(rx>=pad&&rx<=pad+plotW){{ var seekT=t0+(rx-pad)/plotW*(t1-t0); seekT=Math.max(0,Math.min(vid.duration||0,seekT)); vid.currentTime=seekT; playheadT=seekT; if(vid.paused){{ vid.play(); if(btnPlay) btnPlay.textContent='Pause'; }} draw(); }} }}
+if(vid&&c){{ var rect=c.getBoundingClientRect(); var rx=e.clientX-rect.left; var plotW=c.width-2*pad; if(rx>=pad&&rx<=pad+plotW){{ var vst=(D.video_start_time!=null?D.video_start_time:0); var seekT=t0+(rx-pad)/plotW*(t1-t0); seekT=Math.max(0,Math.min(D.duration,seekT)); vid.currentTime=seekT+vst; playheadT=seekT+vst; if(vid.paused){{ vid.play(); if(btnPlay) btnPlay.textContent='Pause'; }} draw(); }} }}
 """
 
     top_offset = "24px"
@@ -618,6 +621,24 @@ def get_fps_from_video(video):
         num, den = map(int, out.split("/"))
         return num / den if den else 30.0
     return float(out) if out else 30.0
+
+
+def get_video_start_time(video):
+    """Get start_time of video stream (seconds). Many MP4 have small offset e.g. 0.012; waveform time 0 = first audio sample, video first frame may be at start_time."""
+    ffprobe = get_ffprobe_cmd()
+    if not ffprobe:
+        return 0.0
+    try:
+        cmd = (
+            f'"{ffprobe}" -v error -select_streams v:0 '
+            f'-show_entries stream=start_time -of csv=p=0 "{video}"'
+        )
+        out = subprocess.check_output(cmd, shell=True).decode().strip()
+        if out and out != "N/A":
+            return float(out)
+    except Exception:
+        pass
+    return 0.0
 
 def extract_audio(video, ffmpeg, output_audio="tmp/audio.wav", channels=1):
     """Extract audio from video. channels=1 for mono (beep/energy), channels=2 for stereo (Vegas-style plot)."""

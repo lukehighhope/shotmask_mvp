@@ -115,14 +115,16 @@ def compute_attack_slope(envelope, sr, window_ms=10):
     return attack
 
 
-def refine_onset_time(data, sr, t_sec, envelope=None, window_sec=0.06):
+def refine_onset_time(data, sr, t_sec, envelope=None, window_sec=0.06, onset_frac=0.12):
     """
-    Refine shot time to true onset (max attack) in ±window_sec around t_sec.
-    Reduces error from using peak time (which can be pulled by echo/reverb).
-    Target: 20–40ms localization error.
+    Refine shot time to perceptual onset (when envelope first rises), so the marker
+    aligns with when you hear the shot, not the later waveform peak.
+    - If onset_frac > 0: use "first crossing" of envelope >= onset_frac * max(seg) in the window
+      (earlier than max-slope and peak; typical 0.1–0.15).
+    - If onset_frac <= 0: use max positive slope (legacy).
     """
     if envelope is None:
-        env_win = max(1, int(sr * 0.003))
+        env_win = max(1, int(sr * 0.002))  # 2ms for sharper rise
         energy = np.abs(np.asarray(data, dtype=np.float64))
         envelope = np.convolve(energy, np.ones(env_win) / env_win, mode="same")
     center = int(round(t_sec * sr))
@@ -132,10 +134,19 @@ def refine_onset_time(data, sr, t_sec, envelope=None, window_sec=0.06):
     if end - start < 4:
         return t_sec
     seg = envelope[start:end]
+    seg_max = float(np.max(seg)) + 1e-12
+    if onset_frac > 0:
+        # First sample where envelope >= onset_frac * max(seg) (perceptual onset, before peak)
+        thresh = onset_frac * seg_max
+        above = np.where(seg >= thresh)[0]
+        if len(above) > 0:
+            idx = int(above[0])
+            refined_sample = start + idx
+            return float(refined_sample) / sr
+    # Fallback: max positive slope (attack)
     diff = np.diff(seg)
     if len(diff) == 0:
         return t_sec
-    # True onset = max positive slope (attack)
     idx = int(np.argmax(diff))
     refined_sample = start + idx
     return float(refined_sample) / sr
