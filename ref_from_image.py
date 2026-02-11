@@ -5,11 +5,11 @@ optional last line with "0.56 (29) AMG 95D3" where (N) = total shot count.
 
 Naming convention (same folder as *.mp4):
   *.mp4       = main shooting video
-  *cali.txt   = calibration splits (preferred over *.txt when present); ref_times = beep_t + cumsum(splits)
+  *cali.txt   = calibration shot times in seconds from video start (one per line). Preferred over *.txt when present.
   *.txt       = split data (intervals from beep), one number per line; used when *cali.txt absent
-  *beep.txt   = beep time relative to video start (seconds), single line
+  *beep.txt   = beep time(s) relative to video start (one per line). When 2+ lines, t0 = last beep; ref = t0 + cumsum(splits) so axis = absolute time.
 
-Returns list of floats = splits; ref_times = beep_t + np.cumsum(splits).
+Returns list of floats = splits; ref_times = beep_t + np.cumsum(splits) (or beep_t + value_i when file = time since beep per shot).
 Requires: pip install pytesseract Pillow; Tesseract-OCR installed on system.
 """
 import os
@@ -94,16 +94,59 @@ def parse_ref_splits_from_image(jpg_path):
 
 
 def ref_shot_times_from_splits(beep_t, splits):
-    """Compute ref shot times (abs seconds): beep_t + cumsum(splits)."""
+    """Ref shot times (absolute seconds on timeline): beep_t + cumsum(splits). When 2 beeps, beep_t = second beep so axis = absolute time."""
     import numpy as np
     return (beep_t + np.cumsum(splits)).tolist()
 
 
+def _read_beep_times_from_file(video_path):
+    """Read *beep.txt for video; returns list of float or empty list."""
+    video_path = os.path.abspath(os.path.normpath(video_path)) if video_path else ""
+    dirname = os.path.dirname(video_path)
+    base = os.path.splitext(os.path.basename(video_path))[0] if video_path else ""
+    key = base.split("-")[0] if "-" in base else base
+    beep_txt = os.path.join(dirname, key + "beep.txt")
+    if not os.path.isfile(beep_txt):
+        return []
+    try:
+        times = []
+        with open(beep_txt, "r", encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln:
+                    try:
+                        times.append(float(ln))
+                    except ValueError:
+                        pass
+        return times
+    except Exception:
+        return []
+
+
+def get_beep_t_for_ref(video_path, audio_path=None, fps=None):
+    """
+    Beep time used for computing ref_times (ref = beep_t + cumsum(splits) for *.txt).
+    When multiple beeps: use *last* beep as split file origin so ref shot time axis starts at last beep.
+    When 1 beep: use that beep. Same lookup order as get_beep_t_for_video.
+    """
+    times = _read_beep_times_from_file(video_path)
+    if times:
+        return float(times[-1])
+    try:
+        from detectors.beep import detect_beeps
+    except Exception:
+        return 0.0
+    if audio_path is None or fps is None:
+        return 0.0
+    beeps = detect_beeps(audio_path, fps)
+    return float(beeps[0]["t"]) if beeps else 0.0
+
+
 def get_beep_t_for_video(video_path, audio_path, fps):
     """
-    Return beep time in seconds (relative to video start).
-    Priority: 1) same-folder *beep.txt (first line); 2) beep_overrides.json; 3) detect_beeps().
-    *beep.txt = beep time relative to video start (one number per file).
+    Return beep time in seconds (relative to video start) used as split start / t0 for *filtering* shots.
+    Priority: 1) same-folder *beep.txt; 2) beep_overrides.json; 3) detect_beeps().
+    *beep.txt: one number per line. When there are 2+ beeps, t0 = last beep (only shots after last beep count).
     Paths: video_path is normalized to absolute so *beep.txt is always looked up next to the video file.
     """
     try:
@@ -114,15 +157,9 @@ def get_beep_t_for_video(video_path, audio_path, fps):
     dirname = os.path.dirname(video_path)
     base = os.path.splitext(os.path.basename(video_path))[0] if video_path else ""
     key = base.split("-")[0] if "-" in base else base
-    beep_txt = os.path.join(dirname, key + "beep.txt")
-    if os.path.isfile(beep_txt):
-        try:
-            with open(beep_txt, "r", encoding="utf-8") as f:
-                line = f.readline().strip()
-            if line:
-                return float(line)
-        except Exception:
-            pass
+    times = _read_beep_times_from_file(video_path)
+    if times:
+        return float(times[-1])
     override_path = os.path.join(dirname, "beep_overrides.json")
     if os.path.isfile(override_path):
         try:
@@ -139,10 +176,9 @@ def get_beep_t_for_video(video_path, audio_path, fps):
 
 def get_ref_times_and_source(video_path, beep_t, ref_image_path=None):
     """
-    Get reference shot times and a short source description.
-    Only uses same-name .txt for splits (no same-name .jpg). ref = beep_t + cumsum(splits).
-    Returns (ref_times_list, source_str).
-    Paths: video_path is normalized to absolute so *.txt is always looked up next to the video file.
+    Get reference shot times (absolute seconds from video start) and a short source description.
+    For splits (*.txt): ref = beep_t + cumsum(splits); pass last beep when multiple beeps (get_beep_t_for_ref).
+    *cali.txt is absolute times (no beep_t). Returns (ref_times_list, source_str).
     """
     from reference_splits import ref_shot_times
 
@@ -175,11 +211,16 @@ def get_ref_times_and_source(video_path, beep_t, ref_image_path=None):
             path_to_try = cali_path if os.path.isfile(cali_path) else txt_path
             numbers = parse_ref_splits_from_txt(path_to_try)
             if numbers:
+                # *cali.txt: absolute times (seconds from video start), one per line
+                if path_to_try == cali_path:
+                    arr = sorted([float(x) for x in numbers])
+                    return arr, "{} (absolute)".format(os.path.basename(path_to_try))
                 if _looks_like_absolute_times(numbers):
                     arr = [float(x) for x in numbers]
                     if beep_t > 0 and arr[0] < beep_t:
                         return [beep_t + x for x in arr], "{} (absolute since beep)".format(os.path.basename(path_to_try))
                     return arr, "{} (absolute)".format(os.path.basename(path_to_try))
+                # *.txt (non-cali): splits; ref = beep_t + cumsum(splits)
                 return ref_shot_times_from_splits(beep_t, numbers), "{} (splits)".format(os.path.basename(path_to_try))
     ref = ref_shot_times(beep_t)
     return ref, "reference_splits(beep)"

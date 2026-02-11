@@ -7,7 +7,8 @@ Ref 优先：同目录 *cali.txt（校准 shot 时刻），若无则用 *.txt。
 Usage:
   python train_cnn_gunshot.py --folder 01032026 --epochs 50 --out outputs/cnn_gunshot.pt --save-config
   python train_cnn_gunshot.py --folder 01032026 --epochs 20 --resume --out outputs/cnn_gunshot.pt   # 在已有模型上再训 20 轮
-  python train_cnn_gunshot.py --folder "traning data" --recursive   # 用 traning data 下所有子目录（01032026 + outdoor 等，含绝对时间 txt）
+  python train_cnn_gunshot.py --folder "traning data" --recursive   # 用 traning data 下所有子目录
+  python train_cnn_gunshot.py --use-split --epochs 50 --out outputs/cnn_gunshot.pt   # 按 dataset_split：每文件夹最后一支为 val，其余 train；新文件夹自动纳入
 """
 import os
 import sys
@@ -35,13 +36,16 @@ GT_TOL = 0.04
 WINDOW_AFTER = 0.08
 
 
-def build_mel_dataset(folder, cal_cfg=None):
-    """对 folder 下每个 mp4：取 ref（同目录 *cali.txt 优先，否则 *.txt）、候选，对每个候选截 Mel 并标 0/1。返回 (mels, labels)."""
+def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
+    """对 folder 下每个 mp4：取 ref（同目录 *cali.txt 优先，否则 *.txt）、候选，对每个候选截 Mel 并标 0/1。返回 (mels, labels).
+    only_videos: 若为 set（basename 如 '1.mp4'），仅处理这些视频（用于 train/val 划分）。"""
     folder = os.path.abspath(folder)
     cal_cfg = cal_cfg or load_calibrated_params() or {}
     mels, labels = [], []
     for f in sorted(os.listdir(folder)):
         if not f.lower().endswith(".mp4"):
+            continue
+        if only_videos is not None and f not in only_videos:
             continue
         vp = os.path.join(folder, f)
         if not os.path.isfile(vp):
@@ -109,6 +113,7 @@ def main():
     ap = argparse.ArgumentParser(description="Train CNN on mel-spectrograms for gunshot classification")
     ap.add_argument("--folder", default="01032026", help="Single folder with .mp4 and .txt ref (or root when --recursive)")
     ap.add_argument("--recursive", action="store_true", help="Use all immediate subfolders of --folder (e.g. traning data -> 01032026, outdoor-...)")
+    ap.add_argument("--use-split", action="store_true", help="Use dataset_split: train on all-but-last video per folder under traning data (val = last video per folder). New folders auto-included.")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -127,7 +132,23 @@ def main():
         print("PyTorch required: pip install torch")
         return 1
 
-    if args.recursive:
+    if args.use_split:
+        try:
+            from dataset_split import get_train_folders_with_videos
+        except ImportError:
+            print("dataset_split.py required for --use-split (same dir as train_cnn_gunshot.py)")
+            return 1
+        folders_with_videos = get_train_folders_with_videos()
+        if not folders_with_videos:
+            print("No train folders from dataset_split (traning data empty or no .mp4?)")
+            return 1
+        print(f"Using dataset_split (last video per folder = val): {len(folders_with_videos)} folder(s)\n")
+        mels, labels = [], []
+        for folder, only_videos in folders_with_videos:
+            m, l = build_mel_dataset(folder, only_videos=only_videos)
+            mels.extend(m)
+            labels.extend(l)
+    elif args.recursive:
         root = os.path.abspath(args.folder)
         subfolders = [
             os.path.join(root, d)

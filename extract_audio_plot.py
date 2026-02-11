@@ -9,7 +9,6 @@ import os
 import shutil
 import subprocess
 import argparse
-import base64
 import threading
 import webbrowser
 import numpy as np
@@ -508,7 +507,7 @@ resize();
 
 def write_calibration_viewer_html(html_path, data, video_path=None):
     """Write HTML for manual shot calibration: envelope + video, black solid draggable lines for shots.
-    Initial shots from data['calibration_shots'] (ref or detected). Drag lines to correct time, Save -> *cali.txt (splits)."""
+    Initial shots from data['calibration_shots'] (ref or detected). Drag lines to correct time, Save -> *cali.txt (absolute times, one per line)."""
     import json
     data = dict(data)
     data.setdefault("video_start_time", get_audio_start_time(video_path) if video_path and os.path.isfile(video_path) else 0.0)
@@ -517,7 +516,7 @@ def write_calibration_viewer_html(html_path, data, video_path=None):
         calibration_shots = list(data.get("ref_shot_times") or data.get("shot_times") or [])
     data["calibration_shots"] = sorted(calibration_shots)
     if data.get("beep_times"):
-        data["beep_t"] = float(data["beep_times"][0])
+        data["beep_t"] = float(data["beep_times"][-1])
     else:
         data.setdefault("beep_t", 0.0)
     if video_path and os.path.isfile(video_path):
@@ -801,13 +800,9 @@ btnSaveEl.addEventListener('mouseup',function(e){{ e.stopPropagation(); }});
 btnSaveEl.addEventListener('click',function(e){{
  e.preventDefault();
  e.stopPropagation();
- var beep_t = (D.beep_t != null) ? D.beep_t : (D.beep_times && D.beep_times[0] != null ? D.beep_times[0] : 0);
  var sorted = calibrationShots.slice().sort(function(a,b){{ return a-b; }});
  if(sorted.length===0){{ alert('没有枪声时刻'); return; }}
- var splits = [];
- splits.push(parseFloat((sorted[0]-beep_t).toFixed(4)));
- for(var i=1;i<sorted.length;i++) splits.push(parseFloat((sorted[i]-sorted[i-1]).toFixed(4)));
- var text = splits.map(function(x){{ return x.toFixed(4); }}).join('\\n');
+ var text = sorted.map(function(t){{ return parseFloat(t.toFixed(4)); }}).map(function(x){{ return x.toFixed(4); }}).join('\\n');
  if(D.calibration_save_path && location.protocol==='http:'){{
   fetch('/save_calibration', {{ method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{ path: D.calibration_save_path, content: text }}) }})
    .then(function(r){{ return r.json(); }})
@@ -929,61 +924,6 @@ def run_calibration_server(serve_dir, port=8765, html_basename=None, allowed_sav
         pass
     server.shutdown()
 
-
-def write_image_zoom_viewer_html(image_path):
-    """Write HTML that zooms by scaling the PNG (image zoom only)."""
-    if not image_path or not os.path.isfile(image_path):
-        return None
-    out_dir = os.path.dirname(image_path)
-    base = os.path.basename(image_path)
-    name = os.path.splitext(base)[0]
-    html_path = os.path.join(out_dir, name + "_image_zoom.html")
-    with open(image_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("ascii")
-    mime = "image/png"
-    html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Image zoom</title>
-<style>
-* {{ margin:0; padding:0; }}
-html, body {{ width:100%; height:100%; overflow:hidden; background:#1a1a1a; }}
-#wrap {{ width:100%; height:100%; overflow:hidden; cursor:grab; position:relative; }}
-#wrap.dragging {{ cursor:grabbing; }}
-#img {{ position:absolute; top:50%; left:50%; transform-origin: 0 0; }}
-</style></head>
-<body><div id="wrap"><img id="img" src="data:{mime};base64,{b64}" alt="waveform"></div>
-<script>
-(function(){{
- var wrap=document.getElementById('wrap'), img=document.getElementById('img');
- var scale=1, tx=0, ty=0, lastX=0, lastY=0, drag=0, initCX=0, initCY=0;
- function clamp(v,a,b){{ return Math.max(a,Math.min(b,v)); }}
- function apply(){{
-  img.style.transform = 'translate('+(tx+initCX)+'px,'+(ty+initCY)+'px) scale('+scale+') translate(-50%,-50%)';
- }}
- img.onload = function(){{
-  initCX=wrap.clientWidth/2; initCY=wrap.clientHeight/2;
-  apply();
- }};
- if(img.complete) img.onload();
- wrap.addEventListener('wheel', function(e){{
-  e.preventDefault();
-  var k = e.deltaY > 0 ? 0.88 : 1/0.88;
-  var rect=wrap.getBoundingClientRect();
-  var mx=e.clientX-rect.left, my=e.clientY-rect.top;
-  var cx=rect.width/2, cy=rect.height/2;
-  var dx=mx-cx-tx, dy=my-cy-ty;
-  scale = clamp(scale*k, 0.05, 100);
-  tx = mx - cx - dx*k; ty = my - cy - dy*k;
-  apply();
- }}, {{ passive:false }});
- wrap.addEventListener('mousedown', function(e){{ drag=1; lastX=e.clientX; lastY=e.clientY; wrap.classList.add('dragging'); }});
- wrap.addEventListener('mousemove', function(e){{ if(drag){{ tx+=e.clientX-lastX; ty+=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY; apply(); }} }});
- wrap.addEventListener('mouseup', function(){{ drag=0; wrap.classList.remove('dragging'); }});
- wrap.addEventListener('mouseleave', function(){{ drag=0; wrap.classList.remove('dragging'); }});
-}})();
-</script></body></html>"""
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html)
-    return html_path
 
 # Try importing matplotlib, if not available use Pillow fallback
 try:
@@ -1562,18 +1502,26 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
     if v_dur is not None and a_dur is not None and abs(v_dur - a_dur) > 0.05:
         print(f"  Note: video and audio duration differ; waveform follows audio stream. Sync may look off at the end.")
     
-    # Beep: prefer same-folder *beep.txt (e.g. 1beep.txt for 1.mp4), else detect
+    # Beep: prefer same-folder *beep.txt (all lines); if 2+ beeps, ref/split start = last beep
     beep_times = None
     video_dir = os.path.dirname(os.path.abspath(video))
     video_base = os.path.splitext(os.path.basename(video))[0]
-    beep_txt = os.path.join(video_dir, video_base + "beep.txt")
+    key = video_base.split("-")[0] if "-" in video_base else video_base
+    beep_txt = os.path.join(video_dir, key + "beep.txt")
     if os.path.isfile(beep_txt):
         try:
+            times = []
             with open(beep_txt, "r", encoding="utf-8") as f:
-                line = f.readline().strip()
-                if line:
-                    beep_times = [float(line)]
-                    print(f"Beep time from {os.path.basename(beep_txt)}: {beep_times[0]:.4f}s")
+                for ln in f:
+                    ln = ln.strip()
+                    if ln:
+                        try:
+                            times.append(float(ln))
+                        except ValueError:
+                            pass
+            if times:
+                beep_times = times
+                print(f"Beep time(s) from {os.path.basename(beep_txt)}: {beep_times}; split start (t0) = last = {times[-1]:.4f}s")
         except Exception:
             pass
     shot_times = []
@@ -1587,11 +1535,13 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
             beep_times = [b["t"] for b in beeps]
             if beep_times:
                 print(f"Beep time(s) for x-axis: {beep_times}")
-        # When we have beep (from file or detect): get ref_times and run detector (row0=ref, row1=audio/CNN shots)
+        # When we have beep: ref_times 用最后一个 beep 作为 split 起点，这样 *.txt 的 ref 时间轴正确
         if fps is not None and beep_times:
-            ref_times, ref_source = get_ref_times_and_source(video, float(beep_times[0]))
+            t0_for_ref = float(beep_times[-1])
+            t0_beep = float(beep_times[-1])
+            ref_times, ref_source = get_ref_times_and_source(video, t0_for_ref)
             if not ref_times:
-                ref_times = ref_shot_times(beep_times[0])
+                ref_times = ref_shot_times(t0_beep)
                 ref_source = "reference_splits(beep)"
             beep_src = os.path.basename(beep_txt) if (beep_txt and os.path.isfile(beep_txt)) else "detect_beeps"
             try:
@@ -1737,9 +1687,9 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                     print(f"LogReg model saved to: {out_path}")
                     return
             shots = detect_shots(audio_mono, fps)
-            # Shots all happen after beep: drop any detection before beep (video start noise)
+            # Shots all happen after beep: drop any detection before last beep (t0)
             if beep_times and len(shots) > 0:
-                t0_beep = float(beep_times[0])
+                t0_beep = float(beep_times[-1])
                 shots = [s for s in shots if s["t"] >= t0_beep]
             shot_times = [s["t"] for s in shots]
             if shot_times:
@@ -1754,7 +1704,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                     audio_path=audio_mono,
                     energy_threshold=0.3,
                     min_dist_sec=0.08,
-                    t0_beep=float(beep_times[0]) if beep_times else None,
+                    t0_beep=float(beep_times[-1]) if beep_times else None,
                 )
                 energy_shot_times = [s["t"] for s in energy_shots]
                 if energy_shot_times:
@@ -1789,6 +1739,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                   video_path=video_abs)
     
     viewer_envelope_path = ""
+    viewer_calibration_path = ""
     wdata = None
     if not no_viewers and output_image:
         out_dir = os.path.dirname(output_image)
@@ -1804,28 +1755,28 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
             write_data_zoom_viewer_envelope_only_html(viewer_envelope_path, wdata, video_path=video)
         except Exception as e:
             print(f"Envelope viewer skipped: {e}")
-        if use_calibration_viewer and wdata is not None:
+        # 第三个图：waveform + video + calibration（可拖拽标线，Save -> *cali.txt）
+        if wdata is not None:
             try:
                 cal_data = dict(wdata)
                 cal_data["calibration_shots"] = list(ref_times_for_plot if ref_times_for_plot else (shot_times or []))
                 cal_data["video_base_name"] = name
-                cal_viewer_path = os.path.join(out_dir, name + "_calibration_viewer.html")
-                write_calibration_viewer_html(cal_viewer_path, cal_data, video_path=video)
-                video_dir_cal = os.path.dirname(os.path.abspath(os.path.normpath(video)))
-                run_calibration_server(out_dir, port=8765, html_basename=os.path.basename(cal_viewer_path), allowed_save_dir=video_dir_cal)
+                viewer_calibration_path = os.path.join(out_dir, name + "_calibration_viewer.html")
+                write_calibration_viewer_html(viewer_calibration_path, cal_data, video_path=video)
+                if use_calibration_viewer:
+                    video_dir_cal = os.path.dirname(os.path.abspath(os.path.normpath(video)))
+                    run_calibration_server(out_dir, port=8765, html_basename=os.path.basename(viewer_calibration_path), allowed_save_dir=video_dir_cal)
             except Exception as e:
                 print(f"Calibration viewer skipped: {e}")
     
     print(f"\nDone!")
     print(f"  Audio (mono): {audio_mono}")
     print(f"  Audio (stereo): {audio_stereo}")
-    print(f"  Waveform plot: {output_image}")
+    print(f"  1) Waveform: {output_image}")
     if not no_viewers and viewer_envelope_path and os.path.isfile(viewer_envelope_path):
-        print(f"  Envelope viewer: {viewer_envelope_path} (open in browser)")
-    if use_calibration_viewer and output_image:
-        cal_path = os.path.join(os.path.dirname(output_image), os.path.splitext(os.path.basename(output_image))[0] + "_calibration_viewer.html")
-        if os.path.isfile(cal_path):
-            print(f"  Calibration viewer: {cal_path} (drag lines, Save -> *cali.txt)")
+        print(f"  2) Envelope+video viewer: {viewer_envelope_path}")
+    if not no_viewers and viewer_calibration_path and os.path.isfile(viewer_calibration_path):
+        print(f"  3) Waveform+video+calibration: {viewer_calibration_path}" + (" (server started, Save -> *cali.txt)" if use_calibration_viewer else ""))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract audio from video and generate waveform plot")
@@ -1835,8 +1786,8 @@ if __name__ == "__main__":
     parser.add_argument("--use-ref", action="store_true", help="Use reference shot times (training set only; for comparing to detector)")
     parser.add_argument("--calibrate", action="store_true", help="Tune detector on training set (1.mp4), save best params for new videos")
     parser.add_argument("--train-logreg", action="store_true", help="Train logistic regression on candidate features (requires beep/ref)")
-    parser.add_argument("--viewers", action="store_true", help="Generate zoom viewer and envelope+video HTML (default: off)")
-    parser.add_argument("--calibration", action="store_true", help="Generate manual shot calibration viewer (draggable lines); starts local server so Save writes to video folder")
+    parser.add_argument("--viewers", action="store_true", help="Generate 3 outputs: waveform PNG + envelope+video viewer + waveform+video+calibration viewer (default: off)")
+    parser.add_argument("--calibration", action="store_true", help="With --viewers: also start calibration server so Save writes to video folder")
     args = parser.parse_args()
     
     main(

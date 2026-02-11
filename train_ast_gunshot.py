@@ -4,6 +4,7 @@ Uses same data pipeline as train_cnn_gunshot (mel segments from candidates + ref
 Usage:
   python train_ast_gunshot.py --folder "traning data/01032026" --epochs 40 --out outputs/ast_gunshot.pt
   python train_ast_gunshot.py --folder "traning data" --recursive --epochs 30 --augment --out outputs/ast_gunshot.pt --save-config
+  python train_ast_gunshot.py --use-split --epochs 40   # dataset_split: last video per folder = val, new folders auto-included
 """
 import os
 import sys
@@ -25,13 +26,16 @@ from train_logreg_multivideo import (
 GT_TOL = 0.04
 
 
-def build_mel_dataset(folder, cal_cfg=None):
-    """Same as train_cnn_gunshot: per-video ref (*cali.txt else *.txt) + candidates → (mels, labels)."""
+def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
+    """Same as train_cnn_gunshot: per-video ref (*cali.txt else *.txt) + candidates → (mels, labels).
+    only_videos: if set, only process these basenames (for train/val split)."""
     folder = os.path.abspath(folder)
     cal_cfg = cal_cfg or load_calibrated_params() or {}
     mels, labels = [], []
     for f in sorted(os.listdir(folder)):
         if not f.lower().endswith(".mp4"):
+            continue
+        if only_videos is not None and f not in only_videos:
             continue
         vp = os.path.join(folder, f)
         if not os.path.isfile(vp):
@@ -96,6 +100,7 @@ def main():
     ap = argparse.ArgumentParser(description="Train AST (Spectrogram Transformer) for gunshot classification")
     ap.add_argument("--folder", default="traning data/01032026", help="Folder with .mp4 and .txt ref (or root when --recursive)")
     ap.add_argument("--recursive", action="store_true", help="Use all subfolders of --folder")
+    ap.add_argument("--use-split", action="store_true", help="Use dataset_split: train on all-but-last video per folder under traning data. New folders auto-included.")
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -116,7 +121,23 @@ def main():
         print("PyTorch required: pip install torch")
         return 1
 
-    if args.recursive:
+    if args.use_split:
+        try:
+            from dataset_split import get_train_folders_with_videos
+        except ImportError:
+            print("dataset_split.py required for --use-split (same dir as train_ast_gunshot.py)")
+            return 1
+        folders_with_videos = get_train_folders_with_videos()
+        if not folders_with_videos:
+            print("No train folders from dataset_split (traning data empty or no .mp4?)")
+            return 1
+        print(f"Using dataset_split (last video per folder = val): {len(folders_with_videos)} folder(s)\n")
+        mels, labels = [], []
+        for folder, only_videos in folders_with_videos:
+            m, l = build_mel_dataset(folder, only_videos=only_videos)
+            mels.extend(m)
+            labels.extend(l)
+    elif args.recursive:
         root = os.path.abspath(args.folder)
         subfolders = [
             os.path.join(root, d)

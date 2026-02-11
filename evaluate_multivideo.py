@@ -7,7 +7,7 @@ import os
 import numpy as np
 
 from detectors.shot_audio import detect_shots
-from ref_from_image import get_ref_times_for_video, get_beep_t_for_video
+from ref_from_image import get_ref_times_for_video, get_beep_t_for_video, get_beep_t_for_ref
 
 # Reuse train script helpers
 from train_logreg_multivideo import (
@@ -92,18 +92,39 @@ def main():
     import argparse
     ap = argparse.ArgumentParser(description="Evaluate gunshot detection (LogReg+CNN or CNN-only)")
     ap.add_argument("--folder", default="01032026")
+    ap.add_argument("--video", default=None, metavar="NAME", help="Evaluate only this video (e.g. S7-main.mp4); must be in --folder")
+    ap.add_argument("--use-split", action="store_true", help="Evaluate on validation set (last video per folder from dataset_split)")
     ap.add_argument("--cnn-only", action="store_true", help="Use CNN only for scoring (no LogReg)")
     ap.add_argument("--threshold", type=float, default=None, help="Post-filter: keep only shots with confidence >= this (for threshold sweep)")
     ap.add_argument("--nms", type=float, default=NMS_TIME_WINDOW, help=f"NMS time window in seconds (0=disable). Default {NMS_TIME_WINDOW}")
     ap.add_argument("--analyze-fp", action="store_true", help="Print false positive analysis (confidence distribution)")
     args = ap.parse_args()
-    folder = os.path.abspath(args.folder)
-    if not os.path.isdir(folder):
-        print(f"Not a directory: {folder}")
-        return
-    videos = sorted(
-        [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".mp4")]
-    )
+    if args.use_split:
+        try:
+            from dataset_split import get_val_video_paths
+        except ImportError:
+            print("dataset_split.py required for --use-split")
+            return
+        videos = get_val_video_paths()
+        if not videos:
+            print("No validation videos from dataset_split")
+            return
+        print(f"Validation set: {len(videos)} videos (last video per folder)\n")
+    else:
+        folder = os.path.abspath(args.folder)
+        if not os.path.isdir(folder):
+            print(f"Not a directory: {folder}")
+            return
+        if args.video:
+            vpath = os.path.join(folder, args.video)
+            if not os.path.isfile(vpath):
+                print(f"Not found: {vpath}")
+                return
+            videos = [vpath]
+        else:
+            videos = sorted(
+                [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".mp4")]
+            )
     mode = "CNN-only" if args.cnn_only else "LogReg+CNN"
     print(f"Evaluating {len(videos)} videos (tol=±{TOL}s, mode={mode})\n")
     print(f"{'video':<20} {'GT':>4} {'n':>4} {'TP':>4} {'FP':>4} {'FN':>4} {'P':>8} {'R':>8} {'F1':>8}")
@@ -118,9 +139,14 @@ def main():
         if beep_t <= 0:
             print(f"{name:<20} (no beep, skip)")
             continue
-        ref_times = get_ref_times_for_video(vp, beep_t)
-        if not ref_times:
+        beep_t_ref = get_beep_t_for_ref(vp, audio_path, fps)
+        ref_times_all = get_ref_times_for_video(vp, beep_t_ref)
+        if not ref_times_all:
             print(f"{name:<20} (no ref, skip)")
+            continue
+        ref_times = [r for r in ref_times_all if r >= beep_t]
+        if not ref_times:
+            print(f"{name:<20} (no ref after last beep, skip)")
             continue
         result = detect_shots(audio_path, fps, return_candidates=True, use_cnn_only=args.cnn_only)
         if isinstance(result, tuple) and len(result) == 2:
