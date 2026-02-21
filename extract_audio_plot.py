@@ -522,15 +522,18 @@ def write_calibration_viewer_html(html_path, data, video_path=None):
     if video_path and os.path.isfile(video_path):
         video_dir = os.path.dirname(os.path.abspath(os.path.normpath(video_path)))
         video_base = os.path.splitext(os.path.basename(video_path))[0]
+        beep_key = video_base.split("-")[0] if "-" in video_base else video_base
         data["video_base_name"] = video_base
         data["calibration_save_dir"] = video_dir
         data["calibration_save_path"] = os.path.join(video_dir, video_base + "cali.txt")
+        data["calibration_beep_path"] = os.path.join(video_dir, beep_key + "beep.txt")
         data["calibration_http_url"] = "http://127.0.0.1:8765/" + os.path.basename(html_path).replace("\\", "/")
     else:
         if "video_base_name" not in data:
             data["video_base_name"] = os.path.splitext(os.path.basename(html_path))[0].replace("_calibration_viewer", "").replace("_waveform_calibration", "")
         data.setdefault("calibration_save_dir", "")
         data.setdefault("calibration_save_path", "")
+        data.setdefault("calibration_beep_path", "")
         data.setdefault("calibration_http_url", "")
     data_json = json.dumps(data)
     video_src = ""
@@ -593,18 +596,22 @@ html, body {{ width:100%; height:100%; overflow:hidden; background:#ebebeb; font
 #wrap.dragging {{ cursor:grabbing; }}
 #c {{ display:block; width:100%; height:100%; }}
 #waveformToolbar {{ position:absolute; top:8px; left:8px; z-index:2; display:flex; flex-direction:column; gap:6px; }}
-#btnSave {{ padding:12px 24px; background:#2a7; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:16px; font-weight:bold; }}
-#btnSave:hover {{ background:#3b8; }}
+#btnSave, #btnSaveBeep {{ padding:10px 20px; background:#2a7; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:14px; font-weight:bold; }}
+#btnSave:hover, #btnSaveBeep:hover {{ background:#3b8; }}
+#btnSaveBeep {{ background:#187; }}
+#btnSaveBeep:hover {{ background:#298; }}
 #saveDirHint {{ font-size:11px; color:#555; max-width:320px; word-break:break-all; }}
 </style></head>
 <body>
-<div id="hint">手动校准：黑线=枪声可拖；右键黑线=删除该条，右键空白=添加一条枪声 <span id="fileHint" style="display:none"></span></div>
+<div id="hint">黑线=枪声(可拖) 右键=枪声添加/删除；绿线=Beep(可拖) Ctrl+右键=Beep添加/删除 <span id="fileHint" style="display:none"></span></div>
 {video_ui}
-<div id="wrap"><canvas id="c"></canvas><div id="waveformToolbar"><button id="btnSave" type="button">保存校准</button><span id="saveDirHint"></span></div></div>
+<div id="wrap"><canvas id="c"></canvas><div id="waveformToolbar"><button id="btnSave" type="button">保存校准</button><button id="btnSaveBeep" type="button">保存 Beep</button><span id="saveDirHint"></span></div></div>
 <script>
 var D = {data_json};
 var calibrationShots = (D.calibration_shots || []).slice();
+var calibrationBeepTimes = (D.beep_times || []).slice().map(Number).sort(function(a,b){{ return a-b; }});
 var dragLineIndex = -1;
+var dragBeepIndex = -1;
 var dragPlayhead = 0;
 var c=document.getElementById('c'), wrap=document.getElementById('wrap');
 var pad=50, t0=0, t1=D.duration, lastX=0, drag=0, dragSeek=0;
@@ -655,10 +662,10 @@ function draw(){{
  }}
  ctx.closePath();
  ctx.fill();
- if(D.beep_times&&D.beep_times.length){{
-  ctx.strokeStyle='rgba(0,150,0,0.8)';
-  ctx.lineWidth=2;
-  D.beep_times.forEach(function(bt){{
+ if(calibrationBeepTimes.length){{
+  ctx.strokeStyle='rgba(0,150,0,0.9)';
+  ctx.lineWidth=3;
+  calibrationBeepTimes.forEach(function(bt){{
    if(bt>=t0&&bt<=t1){{ var x=pad+(bt-t0)/(t1-t0)*plotW; ctx.beginPath(); ctx.moveTo(x,pad); ctx.lineTo(x,H-pad); ctx.stroke(); }}
   }});
  }}
@@ -668,18 +675,20 @@ function draw(){{
   if(st>=t0&&st<=t1){{ var x=pad+(st-t0)/(t1-t0)*plotW; ctx.beginPath(); ctx.moveTo(x,pad); ctx.lineTo(x,H-pad); ctx.stroke(); }}
  }});
 {video_js_draw}
- var lx=W-pad-180, ly=pad+6;
+ var lx=W-pad-220, ly=pad+6;
  ctx.fillStyle='rgba(255,255,255,0.92)';
  ctx.strokeStyle='#888';
  ctx.beginPath();
- ctx.rect(lx,ly,172,52);
+ ctx.rect(lx,ly,212,68);
  ctx.fill();
  ctx.stroke();
- ctx.font='16px sans-serif';
+ ctx.font='14px sans-serif';
  ctx.fillStyle='#000';
- ctx.fillText('黑实线 = 枪声（可拖）',lx+10,ly+20);
+ ctx.fillText('黑 = 枪声(可拖) 右键添加/删',lx+10,ly+18);
  ctx.fillStyle='rgba(0,120,0,0.9)';
- ctx.fillText('绿 = Beep',lx+10,ly+42);
+ ctx.fillText('绿 = Beep(可拖) Ctrl+右键添加/删',lx+10,ly+40);
+ ctx.fillStyle='#333';
+ ctx.fillText('保存校准->*cali.txt 保存Beep->*beep.txt',lx+10,ly+62);
 }}
 function resize(){{
  c.width=wrap.clientWidth;
@@ -698,6 +707,16 @@ function hitTestLine(rx){{
  var threshold=10;
  for(var i=0;i<calibrationShots.length;i++){{
   var x=pad+(calibrationShots[i]-t0)/(t1-t0)*plotW;
+  if(Math.abs(rx-x)<=threshold) return i;
+ }}
+ return -1;
+}}
+function hitTestBeep(rx){{
+ var plotW=c.width-2*pad;
+ if(plotW<1 || rx<pad || rx>pad+plotW) return -1;
+ var threshold=10;
+ for(var i=0;i<calibrationBeepTimes.length;i++){{
+  var x=pad+(calibrationBeepTimes[i]-t0)/(t1-t0)*plotW;
   if(Math.abs(rx-x)<=threshold) return i;
  }}
  return -1;
@@ -731,6 +750,8 @@ wrap.addEventListener('mousedown',function(e){{
  if(vid && hitTestPlayhead(rx)){{ dragPlayhead=1; lastX=e.clientX; return; }}
  var idx=hitTestLine(rx);
  if(idx>=0){{ dragLineIndex=idx; drag=1; lastX=e.clientX; return; }}
+ var beepIdx=hitTestBeep(rx);
+ if(beepIdx>=0){{ dragBeepIndex=beepIdx; drag=1; lastX=e.clientX; return; }}
  drag=1;
  dragSeek=(typeof vid !== 'undefined' && vid)?1:0;
  lastX=e.clientX;
@@ -748,6 +769,13 @@ wrap.addEventListener('mousemove',function(e){{
   var rx=e.clientX-rect.left;
   var t=xToTime(rx);
   if(t!==null){{ calibrationShots[dragLineIndex]=t; draw(); }}
+  return;
+ }}
+ if(dragBeepIndex>=0){{
+  var rect=c.getBoundingClientRect();
+  var rx=e.clientX-rect.left;
+  var t=xToTime(rx);
+  if(t!==null){{ calibrationBeepTimes[dragBeepIndex]=t; calibrationBeepTimes.sort(function(a,b){{ return a-b; }}); draw(); }}
   return;
  }}
  if(!drag) return;
@@ -774,6 +802,7 @@ wrap.addEventListener('mouseup',function(e){{
   return;
  }}
  if(dragLineIndex>=0){{ dragLineIndex=-1; drag=0; return; }}
+ if(dragBeepIndex>=0){{ dragBeepIndex=-1; drag=0; return; }}
  if(drag && typeof vid !== 'undefined' && vid && c){{
   var rect=c.getBoundingClientRect();
   var rx=e.clientX-rect.left;
@@ -782,13 +811,20 @@ wrap.addEventListener('mouseup',function(e){{
  }}
  drag=0; dragSeek=0;
 }});
-wrap.addEventListener('mouseleave',function(){{ dragLineIndex=-1; dragPlayhead=0; drag=0; dragSeek=0; }});
+wrap.addEventListener('mouseleave',function(){{ dragLineIndex=-1; dragBeepIndex=-1; dragPlayhead=0; drag=0; dragSeek=0; }});
 wrap.addEventListener('contextmenu',function(e){{
  e.preventDefault();
  var rect=c.getBoundingClientRect();
  var rx=e.clientX-rect.left;
  var plotW=c.width-2*pad;
  if(plotW<1 || rx<pad || rx>pad+plotW) return;
+ if(e.ctrlKey){{
+  var beepIdx=hitTestBeep(rx);
+  if(beepIdx>=0){{ calibrationBeepTimes.splice(beepIdx,1); draw(); return; }}
+  var t=xToTime(rx);
+  if(t!==null){{ calibrationBeepTimes.push(t); calibrationBeepTimes.sort(function(a,b){{ return a-b; }}); draw(); }}
+  return;
+ }}
  var idx=hitTestLine(rx);
  if(idx>=0){{ calibrationShots.splice(idx,1); draw(); return; }}
  var t=xToTime(rx);
@@ -818,6 +854,29 @@ btnSaveEl.addEventListener('click',function(e){{
  a.click();
  URL.revokeObjectURL(a.href);
 }});
+var btnSaveBeepEl = document.getElementById('btnSaveBeep');
+if(btnSaveBeepEl){{ btnSaveBeepEl.addEventListener('mousedown',function(e){{ e.stopPropagation(); }}); btnSaveBeepEl.addEventListener('mouseup',function(e){{ e.stopPropagation(); }});
+btnSaveBeepEl.addEventListener('click',function(e){{
+ e.preventDefault();
+ e.stopPropagation();
+ var sorted = calibrationBeepTimes.slice().sort(function(a,b){{ return a-b; }});
+ if(sorted.length===0){{ alert('没有 Beep 时刻'); return; }}
+ var text = sorted.map(function(t){{ return parseFloat(t.toFixed(4)); }}).map(function(x){{ return x.toFixed(4); }}).join('\\n');
+ if(D.calibration_beep_path && location.protocol==='http:'){{
+  fetch('/save_calibration', {{ method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{ path: D.calibration_beep_path, content: text }}) }})
+   .then(function(r){{ return r.json(); }})
+   .then(function(o){{ if(o.ok) document.getElementById('saveDirHint').textContent='Beep 已保存: '+o.path; else alert('保存失败: '+(o.error||'')); }})
+   .catch(function(e){{ alert('保存失败: '+e); }});
+  return;
+ }}
+ var base = (D.video_base_name || 'video'); var key = base.indexOf('-')>=0 ? base.split('-')[0] : base;
+ var blob = new Blob([text], {{ type: 'text/plain;charset=utf-8' }});
+ var a = document.createElement('a');
+ a.href = URL.createObjectURL(blob);
+ a.download = key + 'beep.txt';
+ a.click();
+ URL.revokeObjectURL(a.href);
+}}); }}
 window.addEventListener('resize',resize);
 resize();
 if(D.calibration_save_dir && !D.calibration_save_path) document.getElementById('saveDirHint').textContent='请保存到: '+D.calibration_save_dir;
@@ -843,6 +902,10 @@ def run_calibration_server(serve_dir, port=8765, html_basename=None, allowed_sav
         print(f"Calibration serve: not a directory: {allowed_dir}")
         return
     save_dir = os.path.abspath(os.path.normpath(allowed_save_dir)) if allowed_save_dir else allowed_dir
+    # Normalize for startswith check (Windows: same drive/case)
+    def _norm(p):
+        return os.path.normcase(os.path.abspath(os.path.normpath(p)))
+    allowed_dir_norm = _norm(allowed_dir)
 
     class CalibrationHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -850,9 +913,13 @@ def run_calibration_server(serve_dir, port=8765, html_basename=None, allowed_sav
             if path == "/" or path == "":
                 path = "/" + (html_basename or "index.html")
             rel = path.lstrip("/")
+            # Disallow path traversal (e.g. rel = "..\\other\\file")
+            if rel.startswith("..") or ".." in rel or rel.startswith("/"):
+                self.send_error(404)
+                return
             file_path = os.path.normpath(os.path.join(allowed_dir, rel))
             file_path = os.path.abspath(file_path)
-            if not file_path.startswith(allowed_dir) or not os.path.isfile(file_path):
+            if not _norm(file_path).startswith(allowed_dir_norm) or not os.path.isfile(file_path):
                 self.send_error(404)
                 return
             try:
@@ -1473,7 +1540,7 @@ def plot_waveform(audio_path, output_image=None, show_plot=True, beep_times=None
     
     return fig
 
-def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=False, use_train_logreg=False, no_viewers=True, use_calibration_viewer=False):
+def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=False, use_train_logreg=False, use_viewer=False, use_calibration=False, start_calibration_server=True):
     # Resolve video to absolute path once so ref/beep lookup and ffmpeg use the same file regardless of cwd
     video = os.path.abspath(os.path.normpath(video))
     if not os.path.isfile(video):
@@ -1741,10 +1808,9 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
     viewer_envelope_path = ""
     viewer_calibration_path = ""
     wdata = None
-    if not no_viewers and output_image:
+    if (use_viewer or use_calibration) and output_image:
         out_dir = os.path.dirname(output_image)
         name = os.path.splitext(os.path.basename(output_image))[0]
-        viewer_envelope_path = os.path.join(out_dir, name + "_viewer_envelope.html")
         try:
             wdata = get_waveform_data(
                 audio_stereo,
@@ -1752,20 +1818,25 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                 shot_times=shot_times,
                 ref_shot_times=ref_times_for_plot if ref_times_for_plot is not None else [],
             )
-            write_data_zoom_viewer_envelope_only_html(viewer_envelope_path, wdata, video_path=video)
         except Exception as e:
-            print(f"Envelope viewer skipped: {e}")
-        # 第三个图：waveform + video + calibration（可拖拽标线，Save -> *cali.txt）
-        if wdata is not None:
+            print(f"Waveform data for viewers skipped: {e}")
+        if use_viewer and wdata is not None:
+            viewer_envelope_path = os.path.join(out_dir, name + "_viewer_envelope.html")
+            try:
+                write_data_zoom_viewer_envelope_only_html(viewer_envelope_path, wdata, video_path=video)
+            except Exception as e:
+                print(f"Envelope viewer skipped: {e}")
+        if use_calibration and wdata is not None:
             try:
                 cal_data = dict(wdata)
                 cal_data["calibration_shots"] = list(ref_times_for_plot if ref_times_for_plot else (shot_times or []))
                 cal_data["video_base_name"] = name
                 viewer_calibration_path = os.path.join(out_dir, name + "_calibration_viewer.html")
                 write_calibration_viewer_html(viewer_calibration_path, cal_data, video_path=video)
-                if use_calibration_viewer:
+                if start_calibration_server:
                     video_dir_cal = os.path.dirname(os.path.abspath(os.path.normpath(video)))
-                    run_calibration_server(out_dir, port=8765, html_basename=os.path.basename(viewer_calibration_path), allowed_save_dir=video_dir_cal)
+                    serve_dir_abs = os.path.abspath(os.path.normpath(out_dir))
+                    run_calibration_server(serve_dir_abs, port=8765, html_basename=os.path.basename(viewer_calibration_path), allowed_save_dir=video_dir_cal)
             except Exception as e:
                 print(f"Calibration viewer skipped: {e}")
     
@@ -1773,10 +1844,10 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
     print(f"  Audio (mono): {audio_mono}")
     print(f"  Audio (stereo): {audio_stereo}")
     print(f"  1) Waveform: {output_image}")
-    if not no_viewers and viewer_envelope_path and os.path.isfile(viewer_envelope_path):
+    if use_viewer and viewer_envelope_path and os.path.isfile(viewer_envelope_path):
         print(f"  2) Envelope+video viewer: {viewer_envelope_path}")
-    if not no_viewers and viewer_calibration_path and os.path.isfile(viewer_calibration_path):
-        print(f"  3) Waveform+video+calibration: {viewer_calibration_path}" + (" (server started, Save -> *cali.txt)" if use_calibration_viewer else ""))
+    if use_calibration and viewer_calibration_path and os.path.isfile(viewer_calibration_path):
+        print(f"  3) Waveform+video+calibration: {viewer_calibration_path}" + (" (server started, Save -> *cali.txt)" if start_calibration_server else ""))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract audio from video and generate waveform plot")
@@ -1786,13 +1857,14 @@ if __name__ == "__main__":
     parser.add_argument("--use-ref", action="store_true", help="Use reference shot times (training set only; for comparing to detector)")
     parser.add_argument("--calibrate", action="store_true", help="Tune detector on training set (1.mp4), save best params for new videos")
     parser.add_argument("--train-logreg", action="store_true", help="Train logistic regression on candidate features (requires beep/ref)")
-    parser.add_argument("--viewers", action="store_true", help="Generate 3 outputs: waveform PNG + envelope+video viewer + waveform+video+calibration viewer (default: off)")
-    parser.add_argument("--calibration", action="store_true", help="With --viewers: also start calibration server so Save writes to video folder")
+    parser.add_argument("--viewer", action="store_true", help="Generate envelope+video viewer HTML (zoom waveform with video)")
+    parser.add_argument("--calibration", action="store_true", help="Generate calibration viewer HTML (drag lines, Save -> *cali.txt) and start server so Save writes to video folder")
     args = parser.parse_args()
     
     main(
         args.video, args.output, show_plot=not args.no_show,
         use_ref=args.use_ref, use_calibrate=args.calibrate, use_train_logreg=args.train_logreg,
-        no_viewers=not args.viewers,
-        use_calibration_viewer=args.calibration,
+        use_viewer=args.viewer,
+        use_calibration=args.calibration,
+        start_calibration_server=args.calibration,  # CLI: --calibration => generate HTML + start server
     )

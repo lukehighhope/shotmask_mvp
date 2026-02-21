@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-对 S1–S8 做枪声探测并生成三个图：1) waveform PNG  2) envelope+视频 viewer  3) waveform+video+calibration viewer。
-Beep 来自各视频同目录的 *beep.txt；若有 2 个及以上 beep，split 起点采用最后一个 beep。
+对指定文件夹内所有 .mp4 做枪声探测并生成三个图：
+1) waveform PNG  2) envelope+视频 viewer  3) waveform+video+calibration viewer（不启动服务器）
 
-Usage: python run_s1_s8_shots_and_plots.py
-       python run_s1_s8_shots_and_plots.py --folder "traning data/jeff 03-04"
+Usage: python run_folder_plots.py --folder "test data/indoor"
 """
 import os
 import sys
@@ -12,23 +11,21 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from extract_audio_plot import main as extract_main
 
+
 def main():
     import argparse
-    ap = argparse.ArgumentParser(description="S1-S8 gunshot detection + 3 figures per video (waveform, envelope viewer, calibration viewer)")
-    ap.add_argument("--folder", default=os.path.join(os.path.dirname(__file__), "traning data", "jeff 03-04"),
-                    help="Folder containing S1-main.mp4 ... S8-main.mp4 and S1beep.txt ... S8beep.txt")
+    ap = argparse.ArgumentParser(description="Gunshot detection + 3 figures per video in folder")
+    ap.add_argument("--folder", required=True, help="Folder containing .mp4 files")
     args = ap.parse_args()
     folder = os.path.abspath(args.folder)
     if not os.path.isdir(folder):
         print(f"Not a directory: {folder}", file=sys.stderr)
         return 1
-    videos = []
-    for i in range(1, 9):
-        v = os.path.join(folder, f"S{i}-main.mp4")
-        if os.path.isfile(v):
-            videos.append(v)
+    videos = sorted(
+        [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".mp4")]
+    )
     if not videos:
-        print(f"No S1-main.mp4 .. S8-main.mp4 found in {folder}", file=sys.stderr)
+        print(f"No .mp4 found in {folder}", file=sys.stderr)
         return 1
     print(f"Processing {len(videos)} videos (gunshot detection + 3 figures each)...\n")
     for vp in videos:
@@ -44,13 +41,14 @@ def main():
                 use_train_logreg=False,
                 use_viewer=True,
                 use_calibration=True,
-                start_calibration_server=False,  # batch: only generate HTML, do not start server
+                start_calibration_server=False,
             )
         except Exception as e:
             print(f"  Error: {e}", file=sys.stderr)
         print()
     print("Done.")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

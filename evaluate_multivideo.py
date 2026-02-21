@@ -97,6 +97,7 @@ def main():
     ap.add_argument("--cnn-only", action="store_true", help="Use CNN only for scoring (no LogReg)")
     ap.add_argument("--threshold", type=float, default=None, help="Post-filter: keep only shots with confidence >= this (for threshold sweep)")
     ap.add_argument("--nms", type=float, default=NMS_TIME_WINDOW, help=f"NMS time window in seconds (0=disable). Default {NMS_TIME_WINDOW}")
+    ap.add_argument("--tol", type=float, default=TOL, help=f"Match tolerance in seconds (ref vs detection). Default {TOL}")
     ap.add_argument("--analyze-fp", action="store_true", help="Print false positive analysis (confidence distribution)")
     args = ap.parse_args()
     if args.use_split:
@@ -126,7 +127,8 @@ def main():
                 [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".mp4")]
             )
     mode = "CNN-only" if args.cnn_only else "LogReg+CNN"
-    print(f"Evaluating {len(videos)} videos (tol=±{TOL}s, mode={mode})\n")
+    tol = getattr(args, "tol", TOL)
+    print(f"Evaluating {len(videos)} videos (tol=±{tol}s, mode={mode})\n")
     print(f"{'video':<20} {'GT':>4} {'n':>4} {'TP':>4} {'FP':>4} {'FN':>4} {'P':>8} {'R':>8} {'F1':>8}")
     print("-" * 80)
     total_tp, total_fp, total_fn = 0, 0, 0
@@ -156,7 +158,7 @@ def main():
         shots_audio = [s for s in shots_audio if s.get("t", 0) >= beep_t]
         if audio_candidates:
             audio_candidates = [c for c in audio_candidates if c.get("t", 0) >= beep_t]
-        # FN recovery: add candidate near ref if no shot within 0.04s and candidate conf >= 0.2
+        # FN recovery: add candidate near ref if no shot within 0.04s and candidate conf >= 0.15
         if ref_times and audio_candidates:
             shot_times = [float(s["t"]) for s in shots_audio]
             recovered = []
@@ -166,7 +168,7 @@ def main():
                 best_c, best_dt = None, 999.0
                 for c in audio_candidates:
                     dt = abs(float(c.get("t", 0)) - ref_t)
-                    if dt <= 0.08 and dt < best_dt and float(c.get("confidence", 0)) >= 0.2:
+                    if dt <= 0.10 and dt < best_dt and float(c.get("confidence", 0)) >= 0.15:
                         best_dt, best_c = dt, c
                 if best_c is not None:
                     used_t = shot_times + [float(r["t"]) for r in recovered]
@@ -181,12 +183,12 @@ def main():
             shots_audio = non_maximum_suppression(shots_audio, time_window=args.nms)
         if args.analyze_fp:
             per_video_for_fp.append((ref_times, shots_audio, name))
-        tp, fp, fn, p, r, f1 = evaluate_shots(ref_times, shots_audio)
+        tp, fp, fn, p, r, f1 = evaluate_shots(ref_times, shots_audio, tol=tol)
         total_tp += tp
         total_fp += fp
         total_fn += fn
         if args.analyze_fp and fp > 0:
-            fps_list = analyze_false_positives(ref_times, shots_audio, TOL)
+            fps_list = analyze_false_positives(ref_times, shots_audio, tol)
             if fps_list:
                 confs = [f["confidence"] for f in fps_list]
                 print(f"  -> FP conf: min={min(confs):.3f} max={max(confs):.3f} avg={np.mean(confs):.3f}")
