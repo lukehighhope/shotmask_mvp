@@ -13,6 +13,20 @@ except ImportError:
 CALIBRATED_PARAMS_FILENAME = "calibrated_detector_params.json"
 
 
+def _resolve_cal_paths(cal):
+    """Resolve relative model paths in loaded JSON against repo root."""
+    if not cal:
+        return cal
+    try:
+        from .config_paths import resolve_model_path
+    except ImportError:
+        return cal
+    for key in ("cnn_gunshot_path", "cnn_beep_path", "ast_gunshot_path"):
+        if key in cal and cal[key]:
+            cal[key] = resolve_model_path(cal[key])
+    return cal
+
+
 def load_calibrated_params():
     """Load threshold_coef, min_dist_sec, prominence_frac from project root if present."""
     for base in [os.getcwd(), os.path.dirname(os.path.dirname(os.path.abspath(__file__)))]:
@@ -20,7 +34,7 @@ def load_calibrated_params():
         if os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as f:
-                    return json.load(f)
+                    return _resolve_cal_paths(json.load(f))
             except Exception:
                 pass
     return {}

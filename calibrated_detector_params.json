@@ -55,7 +55,7 @@
   },
   "use_mfcc": true,
   "use_cnn_only": true,
-  "cnn_gunshot_path": "C:\\Users\\Cao\\Downloads\\shotmask_mvp\\outputs\\cnn_gunshot.pt",
-  "cnn_beep_path": "C:\\Users\\Cao\\Downloads\\shotmask_mvp\\outputs\\cnn_beep.pt",
-  "ast_gunshot_path": "C:\\Users\\Cao\\Downloads\\shotmask_mvp\\outputs\\ast_gunshot.pt"
+  "cnn_gunshot_path": "outputs/cnn_gunshot.pt",
+  "cnn_beep_path": "outputs/cnn_beep.pt",
+  "ast_gunshot_path": "outputs/ast_gunshot.pt"
 }

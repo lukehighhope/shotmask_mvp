@@ -5,6 +5,8 @@
 import os
 import json
 import numpy as np
+
+from .config_paths import resolve_model_path
 import soundfile as sf
 
 # Mel 谱图固定尺寸，与训练时一致
@@ -173,8 +175,9 @@ def load_cnn_gunshot(path=None):
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             path = cfg.get("cnn_gunshot_path")
-        if not path or not os.path.isfile(path):
-            return None, None
+    path = resolve_model_path(path)
+    if not path or not os.path.isfile(path):
+        return None, None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     state = torch.load(path, map_location=device)
     arch = state.get("arch", "default") if isinstance(state, dict) else "default"

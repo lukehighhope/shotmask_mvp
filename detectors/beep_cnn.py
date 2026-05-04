@@ -6,6 +6,8 @@ import os
 import json
 import numpy as np
 
+from .config_paths import resolve_model_path
+
 # 与训练一致
 BEEP_SEGMENT_DURATION = 0.35   # 秒
 BEEP_MEL_N_MELS = 64
@@ -110,8 +112,9 @@ def load_cnn_beep(path=None):
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             path = cfg.get("cnn_beep_path")
-        if not path or not os.path.isfile(path):
-            return None, None
+    path = resolve_model_path(path)
+    if not path or not os.path.isfile(path):
+        return None, None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     state = torch.load(path, map_location=device)
     model = build_beep_cnn()

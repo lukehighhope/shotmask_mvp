@@ -8,6 +8,8 @@ import os
 import json
 import numpy as np
 
+from .config_paths import resolve_model_path
+
 # Reuse same mel spec as CNN so we can share data and swap model
 from .shot_cnn import (
     mel_at_time,
@@ -134,8 +136,9 @@ def load_ast_gunshot(path=None):
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             path = cfg.get("ast_gunshot_path")
-        if not path or not os.path.isfile(path):
-            return None, None
+    path = resolve_model_path(path)
+    if not path or not os.path.isfile(path):
+        return None, None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     state = torch.load(path, map_location=device)
     if isinstance(state, dict) and "model_kwargs" in state:
