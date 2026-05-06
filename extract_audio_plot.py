@@ -522,11 +522,10 @@ def write_calibration_viewer_html(html_path, data, video_path=None):
     if video_path and os.path.isfile(video_path):
         video_dir = os.path.dirname(os.path.abspath(os.path.normpath(video_path)))
         video_base = os.path.splitext(os.path.basename(video_path))[0]
-        beep_key = video_base.split("-")[0] if "-" in video_base else video_base
         data["video_base_name"] = video_base
         data["calibration_save_dir"] = video_dir
         data["calibration_save_path"] = os.path.join(video_dir, video_base + "cali.txt")
-        data["calibration_beep_path"] = os.path.join(video_dir, beep_key + "beep.txt")
+        data["calibration_beep_path"] = os.path.join(video_dir, video_base + "beep.txt")
         data["calibration_http_url"] = "http://127.0.0.1:8765/" + os.path.basename(html_path).replace("\\", "/")
     else:
         if "video_base_name" not in data:

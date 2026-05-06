@@ -492,15 +492,23 @@ def _prepare_video(video_path, ffmpeg, force_detect=False):
 
     beep_times, shot_times = [], []
     # Always look for annotations in the video's own folder only.
-    anno_dir = video_dir
-    beep_key  = video_base.split("-")[0] if "-" in video_base else video_base
+    anno_dir  = video_dir
     cali_path = os.path.join(anno_dir, video_base + "cali.txt")
-    beep_path = os.path.join(anno_dir, beep_key + "beep.txt")
+    # Save target always uses full video name (e.g. S8-mainbeep.txt)
+    beep_path = os.path.join(anno_dir, video_base + "beep.txt")
+    # For loading, also check legacy prefix name (e.g. S8beep.txt) as fallback
+    beep_key        = video_base.split("-")[0] if "-" in video_base else video_base
+    beep_load_path  = beep_path  # default: full name
+    beep_legacy     = os.path.join(anno_dir, beep_key + "beep.txt")
+    if not os.path.isfile(beep_path) and os.path.isfile(beep_legacy):
+        beep_load_path = beep_legacy  # load from legacy, but still save to full name
+
     print(f"  cali_path: {cali_path}  exists={os.path.isfile(cali_path)}")
-    print(f"  beep_path: {beep_path}  exists={os.path.isfile(beep_path)}")
+    print(f"  beep_path (save): {beep_path}")
+    print(f"  beep_load_path:   {beep_load_path}  exists={os.path.isfile(beep_load_path)}")
 
     has_cali = os.path.isfile(cali_path) and not force_detect
-    has_beep = os.path.isfile(beep_path) and not force_detect
+    has_beep = os.path.isfile(beep_load_path) and not force_detect
 
     # Load whatever exists; detect whatever is missing
     if has_cali:
@@ -508,7 +516,7 @@ def _prepare_video(video_path, ffmpeg, force_detect=False):
             shot_times = [float(l.strip()) for l in f if l.strip()]
         print(f"  Loaded *cali.txt: {len(shot_times)} shot(s)")
     if has_beep:
-        with open(beep_path, encoding="utf-8") as f:
+        with open(beep_load_path, encoding="utf-8") as f:
             beep_times = [float(l.strip()) for l in f if l.strip()]
         print(f"  Loaded *beep.txt: {beep_times}")
 
@@ -739,7 +747,7 @@ def main():
     ap = argparse.ArgumentParser(
         description="Manual annotation tool: 0.5x playback, drag lines for shots/beep, save to *cali.txt"
     )
-    ap.add_argument("--video", required=True, help="Video file path (.mp4)")
+    ap.add_argument("--video", default=None, help="Video file path (.mp4). If omitted, a file picker opens.")
     ap.add_argument("--speed", type=float, default=0.5,
                     help="Default playback speed (default 0.5)")
     ap.add_argument("--port", type=int, default=8765,
@@ -754,6 +762,21 @@ def main():
     if not ffmpeg:
         print("Error: ffmpeg not found.")
         return 1
+
+    # If no video given, open native file picker
+    if not args.video:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        chosen = filedialog.askopenfilename(
+            title="Select video file to annotate",
+            filetypes=[("Video files", "*.mp4 *.mov *.avi *.mkv *.webm"), ("All files", "*.*")],
+        )
+        root.destroy()
+        if not chosen:
+            print("No video selected, exiting.")
+            return 0
+        args.video = chosen
 
     video = os.path.abspath(os.path.normpath(args.video))
     if not os.path.isfile(video):
