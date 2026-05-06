@@ -636,7 +636,6 @@ function draw(){{
  var i0=0, i1=n-1;
  for(var i=0;i<n;i++){{ if(D.t[i]>=t0){{ i0=i; break; }} }}
  for(var i=n-1;i>=0;i--){{ if(D.t[i]<=t1){{ i1=i; break; }} }}
- var seg=Math.max(1,i1-i0+1);
  var plotW=W-2*pad, plotH=H-2*pad;
  var u=D.upper, l=D.lower;
  var mx=Math.max.apply(null, u.slice(i0,i1+1).map(Math.abs).concat(l.slice(i0,i1+1).map(Math.abs)));
@@ -651,13 +650,13 @@ function draw(){{
  ctx.fillStyle='#782d2d';
  ctx.beginPath();
  for(var i=i0;i<=i1;i++){{
-  var x=pad+(i-i0)/(seg-1||1)*plotW;
-  var vy0=midY-(u[i]||0)/mx*half, vy1=midY-(l[i]||0)/mx*half;
+  var x=pad+(D.t[i]-t0)/(t1-t0)*plotW;
+  var vy0=midY-(u[i]||0)/mx*half;
   if(i===i0) ctx.moveTo(x,vy0);
   else ctx.lineTo(x,vy0);
  }}
  for(var i=i1;i>=i0;i--){{
-  var x=pad+(i-i0)/(seg-1||1)*plotW;
+  var x=pad+(D.t[i]-t0)/(t1-t0)*plotW;
   ctx.lineTo(x,midY-(l[i]||0)/mx*half);
  }}
  ctx.closePath();
