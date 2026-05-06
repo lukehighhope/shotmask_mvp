@@ -922,23 +922,47 @@ def run_calibration_server(serve_dir, port=8765, html_basename=None, allowed_sav
             if not _norm(file_path).startswith(allowed_dir_norm) or not os.path.isfile(file_path):
                 self.send_error(404)
                 return
+            ext = os.path.splitext(file_path)[1].lower()
+            ctype_map = {
+                ".html": "text/html", ".htm": "text/html",
+                ".txt": "text/plain",
+                ".mp4": "video/mp4", ".webm": "video/webm",
+                ".wav": "audio/wav", ".mp3": "audio/mpeg",
+            }
+            ctype = ctype_map.get(ext, "application/octet-stream")
             try:
-                with open(file_path, "rb") as f:
-                    data = f.read()
+                file_size = os.path.getsize(file_path)
+                range_header = self.headers.get("Range")
+                if range_header:
+                    # Parse "bytes=start-end"
+                    byte_range = range_header.strip().replace("bytes=", "")
+                    parts = byte_range.split("-")
+                    start = int(parts[0]) if parts[0] else 0
+                    end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
+                    end = min(end, file_size - 1)
+                    length = end - start + 1
+                    with open(file_path, "rb") as f:
+                        f.seek(start)
+                        data = f.read(length)
+                    self.send_response(206)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", length)
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    with open(file_path, "rb") as f:
+                        data = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", file_size)
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers()
+                    self.wfile.write(data)
             except Exception:
                 self.send_error(500)
                 return
-            ext = os.path.splitext(file_path)[1].lower()
-            ctype = "text/html" if ext in (".html", ".htm") else "application/octet-stream"
-            if ext == ".txt":
-                ctype = "text/plain"
-            elif ext == ".mp4":
-                ctype = "video/mp4"
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", len(data))
-            self.end_headers()
-            self.wfile.write(data)
 
         def do_POST(self):
             if self.path != "/save_calibration":
