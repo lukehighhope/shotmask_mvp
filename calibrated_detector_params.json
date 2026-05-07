@@ -57,5 +57,6 @@
   "use_cnn_only": true,
   "cnn_gunshot_path": "outputs/cnn_gunshot.pt",
   "cnn_beep_path": "outputs/cnn_beep.pt",
-  "ast_gunshot_path": "outputs/ast_gunshot.pt"
+  "ast_gunshot_path": "outputs/ast_gunshot.pt",
+  "ast_gunshot_model": "C:\\Users\\Cao\\Downloads\\shotmask_mvp\\outputs\\ast_gunshot.pt"
 }

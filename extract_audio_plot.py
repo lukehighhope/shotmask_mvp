@@ -594,11 +594,8 @@ html, body {{ width:100%; height:100%; overflow:hidden; background:#ebebeb; font
 #wrap {{ position:absolute; top:{wrap_top}; left:0; right:0; bottom:0; cursor:grab; z-index:1; }}
 #wrap.dragging {{ cursor:grabbing; }}
 #c {{ display:block; width:100%; height:100%; }}
-#waveformToolbar {{ position:absolute; top:8px; left:8px; z-index:2; display:flex; flex-direction:column; gap:6px; }}
-#btnSave, #btnSaveBeep {{ padding:10px 20px; background:#2a7; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:14px; font-weight:bold; }}
-#btnSave:hover, #btnSaveBeep:hover {{ background:#3b8; }}
-#btnSaveBeep {{ background:#187; }}
-#btnSaveBeep:hover {{ background:#298; }}
+#waveformToolbar {{ position:absolute; top:8px; left:8px; z-index:2; display:flex; flex-direction:column; gap:8px; }}
+#btnSave, #btnSaveBeep {{ display:none; }}
 #saveDirHint {{ font-size:11px; color:#555; max-width:320px; word-break:break-all; }}
 </style></head>
 <body>
@@ -673,20 +670,18 @@ function draw(){{
   if(st>=t0&&st<=t1){{ var x=pad+(st-t0)/(t1-t0)*plotW; ctx.beginPath(); ctx.moveTo(x,pad); ctx.lineTo(x,H-pad); ctx.stroke(); }}
  }});
 {video_js_draw}
- var lx=W-pad-220, ly=pad+6;
+ var lx=W-pad-260, ly=pad+6;
  ctx.fillStyle='rgba(255,255,255,0.92)';
  ctx.strokeStyle='#888';
  ctx.beginPath();
- ctx.rect(lx,ly,212,68);
+ ctx.rect(lx,ly,252,52);
  ctx.fill();
  ctx.stroke();
- ctx.font='14px sans-serif';
+ ctx.font='16px sans-serif';
  ctx.fillStyle='#000';
- ctx.fillText('黑 = 枪声(可拖) 右键添加/删',lx+10,ly+18);
+ ctx.fillText('黑 = 枪声(可拖)  右键添加/删',lx+10,ly+20);
  ctx.fillStyle='rgba(0,120,0,0.9)';
- ctx.fillText('绿 = Beep(可拖) Ctrl+右键添加/删',lx+10,ly+40);
- ctx.fillStyle='#333';
- ctx.fillText('保存校准->*cali.txt 保存Beep->*beep.txt',lx+10,ly+62);
+ ctx.fillText('绿 = Beep(可拖)  Ctrl+右键添加/删',lx+10,ly+42);
 }}
 function resize(){{
  c.width=wrap.clientWidth;

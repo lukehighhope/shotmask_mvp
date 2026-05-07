@@ -16,12 +16,18 @@ Usage:
   - 保存校准          → 写入 *cali.txt
   - 保存 Beep         → 写入 *beep.txt
   - 速度按钮          → 0.25x / 0.5x（默认）/ 1x
+
+枪声机检后端（仅在缺少 *cali.txt 需要做机器探测时生效）优先级：
+  1) 同目录  视频基名.shot_detector.txt   单行：auto | ast | cnn
+  2) *cali.txt 顶部的注释行（须连续 # 开头）例如：  # shot_detector=ast
+  3) 命令行  --shot-backend auto|ast|cnn  （默认为 auto → 沿用 calibrated_detector_params.json）
 """
 import os
 import sys
 # Force unbuffered stdout so progress prints appear immediately in terminals
 sys.stdout.reconfigure(line_buffering=True)
 import argparse
+import re
 
 # 把项目根目录加入 import 路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -42,6 +48,112 @@ import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import tkinter as tk
 from tkinter import filedialog
+
+
+_ALLOWED_BACKENDS = frozenset({"auto", "ast", "cnn"})
+
+
+def _split_cali_preamble_lines(lines):
+    pre = []
+    i = 0
+    while i < len(lines) and lines[i].startswith("#"):
+        pre.append(lines[i])
+        i += 1
+    return pre, lines[i:]
+
+
+def _shot_detector_token_from_comment_line(line):
+    stripped = line.strip()
+    if not stripped.startswith("#"):
+        return None
+    inner = stripped[1:].strip()
+    m = re.match(r"(?:shot_detector|shot_backend)\s*=\s*(auto|cnn|ast)\s*$", inner, re.I)
+    if m:
+        return m.group(1).lower()
+    m = re.match(r"detector\s+(auto|cnn|ast)\s*$", inner, re.I)
+    if m:
+        return m.group(1).lower()
+    return None
+
+
+def _backend_from_preamble(pre_lines):
+    for line in pre_lines:
+        d = _shot_detector_token_from_comment_line(line)
+        if d:
+            return d
+    return None
+
+
+def _read_shot_detector_sidecar(path):
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            txt = f.read().strip().lower()
+        return txt if txt in _ALLOWED_BACKENDS else None
+    except OSError:
+        return None
+
+
+def _parse_cali_txt_file(cali_path):
+    """Return (shot_times, preamble_comment_lines_from_top_of_file)."""
+    with open(cali_path, encoding="utf-8") as f:
+        raw_lines = [ln.rstrip("\n\r") for ln in f]
+    pre, rest = _split_cali_preamble_lines(raw_lines)
+    shot_times = []
+    for line in rest:
+        s = line.strip()
+        if not s:
+            continue
+        shot_times.append(float(s))
+    return shot_times, pre
+
+
+def merge_cali_preamble_on_save(cali_path, new_floats_body):
+    """Preserve leading # ... block when rewriting *cali.txt."""
+    preamble_block = ""
+    if os.path.isfile(cali_path):
+        try:
+            with open(cali_path, encoding="utf-8") as f:
+                pre, _ = _split_cali_preamble_lines(
+                    [ln.rstrip("\n\r") for ln in f.readlines()]
+                )
+            if pre:
+                preamble_block = "\n".join(pre)
+        except OSError:
+            pass
+    nb = (new_floats_body or "").strip()
+    if preamble_block:
+        sep = "\n\n" if nb else "\n"
+        return preamble_block + sep + nb + ("\n" if nb else "")
+    return nb + ("\n" if nb else "")
+
+
+def _resolve_shot_detector_backend(anno_dir, video_base, cali_path, session_default):
+    side = os.path.join(anno_dir, f"{video_base}.shot_detector.txt")
+    sb = _read_shot_detector_sidecar(side)
+    if sb:
+        return sb, f"sidecar {os.path.basename(side)}"
+    if cali_path and os.path.isfile(cali_path):
+        try:
+            _, pre = _parse_cali_txt_file(cali_path)
+            sb = _backend_from_preamble(pre)
+            if sb:
+                return sb, "top of existing *cali.txt"
+        except (OSError, ValueError):
+            pass
+    d = (session_default or "auto").strip().lower()
+    d = d if d in _ALLOWED_BACKENDS else "auto"
+    return d, f"session default ({d})"
+
+
+def _detect_shots_with_backend(audio_mono, fps, backend):
+    backend = (backend or "auto").lower()
+    if backend == "ast":
+        return detect_shots(audio_mono, fps, use_ast_gunshot=True)
+    if backend == "cnn":
+        return detect_shots(audio_mono, fps, use_ast_gunshot=False)
+    return detect_shots(audio_mono, fps)
 
 
 def _patch_html_playback_speed(html_path, default_speed=0.5):
@@ -65,6 +177,14 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
         1,
     )
 
+    # ── 0b. Disable dragSeek in original handler (force pan-only, no seek on drag) ──
+    # Even if cloneNode fails to remove the original mousemove, dragSeek=0 prevents seeking.
+    html = html.replace(
+        'dragSeek=(typeof vid !== \'undefined\' && vid)?1:0;',
+        'dragSeek=0; // disabled: pan-only mode',
+        1,
+    )
+
     # ── 1. Default playback rate ──────────────────────────────────────
     old_init = "var vid=document.getElementById('vid');"
     new_init = (
@@ -76,11 +196,14 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     # ── 2. Speed buttons ─────────────────────────────────────────────
     old_ctrl = '<div id="ctrl"><button id="btnPlay" type="button">Play</button>'
     new_ctrl = (
-        '<div id="ctrl">'
-        '<button id="btnPlay" type="button">Play</button>&nbsp;'
-        '<button id="spd025" onclick="_setSpeed(0.25)">0.25x</button>'
-        f'<button id="spd050" onclick="_setSpeed(0.5)" style="font-weight:bold;outline:2px solid #2a7;">0.5x</button>'
-        '<button id="spd100" onclick="_setSpeed(1.0)">1x</button>'
+        '<div id="ctrl" style="font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+        '<button id="btnPlay" type="button" style="padding:6px 18px;font-size:16px;">Play</button>'
+        '<button id="spd025" onclick="_setSpeed(0.25)" style="padding:6px 14px;font-size:16px;">0.25x</button>'
+        f'<button id="spd050" onclick="_setSpeed(0.5)" style="padding:6px 14px;font-size:16px;font-weight:bold;outline:2px solid #2a7;">0.5x</button>'
+        '<button id="spd100" onclick="_setSpeed(1.0)" style="padding:6px 14px;font-size:16px;">1x</button>'
+        '<button id="btnOpenVideo" style="padding:7px 22px;background:#36a;color:#fff;border:none;border-radius:5px;'
+        'cursor:pointer;font-size:17px;font-weight:bold;margin-left:12px;">Open Video</button>'
+        '<span id="loadStatus" style="color:#555;font-size:14px;"></span>'
     )
     html = html.replace(old_ctrl, new_ctrl, 1)
 
@@ -97,15 +220,9 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
         1,
     )
 
-    # ── 4. Open Video button (calls native file picker on server) ────────
+    # ── 4. Open Video JS (button already injected into #ctrl in step 2) ────
     _spd = str(default_speed)
-    open_bar = (
-        '\n<div id="openVideoBar" style="padding:6px 10px;background:#f5f5f5;'
-        'border-bottom:1px solid #ccc;display:flex;align-items:center;gap:10px;font-size:13px;">'
-        '\n  <button id="btnOpenVideo" style="padding:5px 16px;background:#36a;color:#fff;'
-        'border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold;">Open Video</button>'
-        '\n  <span id="loadStatus" style="color:#555;font-size:12px;"></span>'
-        '\n</div>'
+    open_js = (
         '\n<script>'
         '\n(function(){'
         '\n  var btn=document.getElementById("btnOpenVideo");'
@@ -113,7 +230,7 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
         '\n  if(!btn) return;'
         '\n  btn.addEventListener("click",function(e){'
         '\n    e.stopPropagation();'
-        '\n    btn.disabled=true; st.textContent="Opening file picker...";'
+        '\n    btn.disabled=true; st.textContent="Opening...";'
         '\n    fetch("/open_file_dialog")'
         '\n    .then(function(r){return r.json();})'
         '\n    .then(function(res){'
@@ -143,8 +260,7 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
         '\n})();'
         '\n</script>\n'
     )
-    # Insert the open-video bar right after <body>
-    html = html.replace("<body>", "<body>\n" + open_bar, 1)
+    html = html.replace("</body>", open_js + "</body>", 1)
 
     # ── 5. Mouse handlers patch ───────────────────────────────────────
     patch_js = """
@@ -197,16 +313,7 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     draw();
   }, {passive:false});
 
-  // ---- Enlarged playhead hit test (24px) ----
-  function hitPlayhead(rx){
-    var plotW=c.width-2*pad;
-    if(plotW<1||!vid||typeof playheadT==='undefined') return false;
-    var vst=D.video_start_time||0;
-    var pt=playheadT-vst;
-    if(pt<t0||pt>t1) return false;
-    var px=pad+(pt-t0)/(t1-t0)*plotW;
-    return Math.abs(rx-px)<=24;
-  }
+  // Playhead is display-only; dragging it is disabled
   function xToT(rx){
     var plotW=c.width-2*pad;
     if(rx<pad||rx>pad+plotW) return null;
@@ -244,7 +351,7 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
   var _mode=null;   // 'playhead'|'line'|'beep'|'pan'|null
   var _lineIdx=-1, _beepIdx=-1;
   var _startX=0, _moved=false;
-  var THRESH=5;
+  var THRESH=2;
 
   // ---- mousedown ----
   wrap.addEventListener('mousedown', function(e){
@@ -255,9 +362,6 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     _startX=e.clientX; _moved=false;
     var rect=c.getBoundingClientRect();
     var rx=e.clientX-rect.left;
-    if(vid && hitPlayhead(rx)){
-      _mode='playhead'; return;
-    }
     // hit test shot line
     var plotW=c.width-2*pad;
     if(plotW>0 && rx>=pad && rx<=pad+plotW){
@@ -294,9 +398,9 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     }
     if(_mode==='pan' && _moved){
       var dt=t1-t0;
-      var dx=(e.clientX-_startX)/Math.max(1,c.width)*dt;
-      _startX=e.clientX;
-      t0=Math.max(0,Math.min(D.duration-dt, t0-dx));
+        var dx=(e.clientX-_startX)/Math.max(1,c.width)*dt;
+        _startX=e.clientX;
+        t0=Math.max(0,Math.min(D.duration-dt, t0-dx));
       t1=t0+dt;
       draw();
     }
@@ -308,10 +412,7 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     var rect=c.getBoundingClientRect();
     var rx=e.clientX-rect.left;
 
-    if(_mode==='playhead' && vid){
-      // Release playhead → play from here
-      var t=xToT(rx); if(t!==null) seekAndPlay(t);
-    } else if(_mode==='line'){
+    if(_mode==='line'){
       _lineIdx=-1;
     } else if(_mode==='beep'){
       _beepIdx=-1;
@@ -395,45 +496,57 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     }
     window._doSave = doSave;
 
-    var toolbar=document.getElementById('waveformToolbar');
-    if(toolbar){
-      // Hide the original two save buttons (replaced by Save All)
-      var bs=document.getElementById('btnSave');
-      var bb=document.getElementById('btnSaveBeep');
-      if(bs) bs.style.display='none';
-      if(bb) bb.style.display='none';
-      // Create Save All button
-      var btnAll=document.createElement('button');
-      btnAll.type='button';
-      btnAll.textContent='Save All';
-      btnAll.style.cssText='padding:10px 20px;background:#c75;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;';
-      btnAll.addEventListener('mousedown',function(e){e.stopPropagation();});
-      btnAll.addEventListener('mouseup',  function(e){e.stopPropagation();});
-      btnAll.addEventListener('click',function(e){
-        e.preventDefault(); e.stopPropagation();
-        var msg='Save annotations?\\n'+
-          (D.calibration_save_path?'  shots -> '+D.calibration_save_path+'\\n':'')+
-          (D.calibration_beep_path?'  beep  -> '+D.calibration_beep_path:'');
-        if(!confirm(msg)) return;
-        doSave();
-      });
-      toolbar.insertBefore(btnAll, toolbar.firstChild);
+    // Hide the original two save buttons
+    var bs=document.getElementById('btnSave');
+    var bb=document.getElementById('btnSaveBeep');
+    if(bs) bs.style.display='none';
+    if(bb) bb.style.display='none';
 
-      // Save path display
-      var pathDiv = document.createElement('div');
-      pathDiv.id = 'savePathDisplay';
-      pathDiv.style.cssText = 'font-size:11px;color:#555;margin-top:4px;word-break:break-all;';
-      toolbar.appendChild(pathDiv);
+    // Create Save All button and insert before Play button in #ctrl
+    var btnAll=document.createElement('button');
+    btnAll.type='button';
+    btnAll.textContent='Save All';
+    btnAll.style.cssText='padding:6px 18px;background:#c75;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:16px;font-weight:bold;';
+    btnAll.addEventListener('mousedown',function(e){e.stopPropagation();});
+    btnAll.addEventListener('mouseup',  function(e){e.stopPropagation();});
+    btnAll.addEventListener('click',function(e){
+      e.preventDefault(); e.stopPropagation();
+      var msg='Save annotations?\\n'+
+        (D.calibration_save_path?'  shots -> '+D.calibration_save_path+'\\n':'')+
+        (D.calibration_beep_path?'  beep  -> '+D.calibration_beep_path:'');
+      if(!confirm(msg)) return;
+      doSave();
+    });
+    var ctrl=document.getElementById('ctrl');
+    var playBtn=document.getElementById('btnPlay');
+    if(ctrl && playBtn){
+      ctrl.insertBefore(btnAll, playBtn);
+    } else if(ctrl){
+      ctrl.insertBefore(btnAll, ctrl.firstChild);
     }
 
     // Show current save paths (call this after D is updated too)
     window._updateSavePathDisplay = function(){
-      var el = document.getElementById('savePathDisplay');
-      if(!el) return;
-      var lines = [];
-      if(D.calibration_save_path) lines.push('shots: ' + D.calibration_save_path);
-      if(D.calibration_beep_path) lines.push('beep:  ' + D.calibration_beep_path);
-      el.textContent = lines.join('   |   ');
+      function splitPath(p){
+        if(!p) return [];
+        var i=Math.max(p.lastIndexOf('/'), p.lastIndexOf(String.fromCharCode(92)));
+        return i<0 ? ['',p] : [p.slice(0,i+1), p.slice(i+1)];
+      }
+      var sp=splitPath(D.calibration_save_path||D.calibration_beep_path||'');
+      var dir=sp[0]||'';
+      var el=document.getElementById('savePathDisplay');
+      if(el){
+        var parts=[];
+        if(D.calibration_save_path) parts.push('shots: '+splitPath(D.calibration_save_path)[1]);
+        if(D.calibration_beep_path) parts.push('beep: '+splitPath(D.calibration_beep_path)[1]);
+        el.textContent=parts.join('   |   ');
+      }
+      var hint=document.getElementById('saveDirHint');
+      if(hint){
+        var row2=(D.calibration_save_path?'shots: '+splitPath(D.calibration_save_path)[1]:'')+
+                 (D.calibration_beep_path?'   beep: '+splitPath(D.calibration_beep_path)[1]:'');
+        hint.textContent=dir?('Save dir: '+dir+'  |  '+row2):row2;
+      }
     };
     window._updateSavePathDisplay();
   })();
@@ -469,7 +582,7 @@ def _find_annotation_dir(video_base, start_dir):
     return start_dir
 
 
-def _prepare_video(video_path, ffmpeg, force_detect=False):
+def _prepare_video(video_path, ffmpeg, force_detect=False, session_shot_backend="auto"):
     """Extract audio, load or detect annotations, build waveform data.
     Returns (cal_data_dict, video_dir, video_base, anno_dir).
     Always looks for annotation files in the video's own folder only.
@@ -512,8 +625,11 @@ def _prepare_video(video_path, ffmpeg, force_detect=False):
 
     # Load whatever exists; detect whatever is missing
     if has_cali:
-        with open(cali_path, encoding="utf-8") as f:
-            shot_times = [float(l.strip()) for l in f if l.strip()]
+        try:
+            shot_times, _ = _parse_cali_txt_file(cali_path)
+        except ValueError as e:
+            print(f"  Error parsing *cali.txt (expected floats after optional # header): {e}")
+            shot_times = []
         print(f"  Loaded *cali.txt: {len(shot_times)} shot(s)")
     if has_beep:
         with open(beep_load_path, encoding="utf-8") as f:
@@ -533,7 +649,11 @@ def _prepare_video(video_path, ffmpeg, force_detect=False):
         print("Detecting gunshots...")
         try:
             t0_beep = beep_times[-1] if beep_times else 0.0
-            shots = detect_shots(audio_mono, fps)
+            back, src = _resolve_shot_detector_backend(
+                anno_dir, video_base, cali_path, session_shot_backend
+            )
+            print(f"  Shot detector backend: {back} ({src})")
+            shots = _detect_shots_with_backend(audio_mono, fps, back)
             shots = [s for s in shots if float(s["t"]) >= t0_beep]
             shot_times = [float(s["t"]) for s in shots]
             print(f"  Detected {len(shot_times)} shot(s)")
@@ -555,7 +675,7 @@ def _prepare_video(video_path, ffmpeg, force_detect=False):
 
 def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                           initial_video_path=None, initial_save_dir=None,
-                          default_speed=0.5):
+                          default_speed=0.5, session_shot_backend="auto"):
     """HTTP server for the annotation tool.
 
     Endpoints:
@@ -570,6 +690,7 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
     state = {
         "video_path": initial_video_path,
         "save_dir":   initial_save_dir or serve_dir,
+        "session_shot_backend": session_shot_backend,
     }
 
     def _norm(p):
@@ -681,6 +802,8 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                     req  = json.loads(body.decode("utf-8"))
                     path = os.path.abspath(os.path.normpath(req.get("path", "")))
                     content = req.get("content", "")
+                    if path.lower().endswith("cali.txt"):
+                        content = merge_cali_preamble_on_save(path, content)
                     # Allow saving to current video's dir or serve_dir
                     save_dir_n = _norm(state.get("save_dir", serve_dir))
                     if not _norm(path).startswith(save_dir_n):
@@ -703,7 +826,10 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                     # Look for existing annotations in the video's own folder first;
                     # run detection only if none are found.
                     cal_data, video_dir, video_base, anno_dir = _prepare_video(
-                        vpath, ffmpeg_cmd
+                        vpath,
+                        ffmpeg_cmd,
+                        force_detect=False,
+                        session_shot_backend=state.get("session_shot_backend", "auto"),
                     )
                     state["video_path"] = os.path.abspath(os.path.normpath(vpath))
                     state["save_dir"]   = anno_dir  # save to annotation dir, not tmp/
@@ -754,6 +880,14 @@ def main():
                     help="Local server port (default 8765)")
     ap.add_argument("--no-detect", action="store_true",
                     help="Skip machine detection; load existing *cali.txt if available")
+    ap.add_argument(
+        "--shot-backend",
+        default="auto",
+        choices=["auto", "ast", "cnn"],
+        help="Machine gunshot detect (no *cali.txt): ast|cnn or auto "
+             "(follow calibrated_detector_params.json). "
+             "Override per folder: VIDEO.shot_detector.txt or # shot_detector=cnn atop *cali.txt",
+    )
     ap.add_argument("--out-dir", default=None,
                     help="HTML output directory (default: same as video)")
     args = ap.parse_args()
@@ -789,7 +923,10 @@ def main():
 
     # ── 1. Process initial video ──────────────────────────────────────
     cal_data, video_dir, video_base, anno_dir = _prepare_video(
-        video, ffmpeg, force_detect=args.no_detect
+        video,
+        ffmpeg,
+        force_detect=args.no_detect,
+        session_shot_backend=args.shot_backend,
     )
 
     # ── 2. Generate HTML ──────────────────────────────────────────────
@@ -813,6 +950,7 @@ def main():
         initial_video_path=video,
         initial_save_dir=anno_dir,
         default_speed=args.speed,
+        session_shot_backend=args.shot_backend,
     )
     return 0
 

@@ -1,4 +1,44 @@
-{
-  "split_type": "last_video_per_folder",
-  "folders": []
+﻿{
+    "note":  "val = first video per folder (fixed); train = rest (grows as new videos are annotated)",
+    "train":  [
+                  "outdoor/dz01032026/2.mp4",
+                  "outdoor/dz01032026/3.mp4",
+                  "outdoor/dz01032026/4.mp4",
+                  "outdoor/dz01032026/5.mp4",
+                  "outdoor/dz1/v2.mp4",
+                  "outdoor/dz1/v3.mp4",
+                  "outdoor/dz1/v4.mp4",
+                  "outdoor/dz1/v5.mp4",
+                  "outdoor/dz1/v6.mp4",
+                  "outdoor/jeff 03-04/S2-main.mp4",
+                  "outdoor/jeff 03-04/S3-main.mp4",
+                  "outdoor/jeff 03-04/S4-main.mp4",
+                  "outdoor/jeff 03-04/S5-main.mp4",
+                  "outdoor/jeff 03-04/S6-main.mp4",
+                  "outdoor/jeff 03-04/S7-main.mp4",
+                  "outdoor/jeff 03-04/S8-main.mp4",
+                  "outdoor/jeff 05-06/S2-main.mp4",
+                  "outdoor/jeff 05-06/S3-main.mp4",
+                  "outdoor/jeff 05-06/S4-main.mp4",
+                  "outdoor/jeff 05-06/S5-main.mp4",
+                  "outdoor/jeff 05-06/S6-main.mp4",
+                  "outdoor/jeff 05-06/S7-main.mp4",
+                  "outdoor/outdoor-20260208T235429Z-1-001/S2-main.mp4",
+                  "outdoor/outdoor-20260208T235429Z-1-001/S3-main.mp4",
+                  "outdoor/outdoor-20260208T235429Z-1-001/S4-main.mp4",
+                  "outdoor/outdoor-20260208T235429Z-1-001/S5-main.mp4",
+                  "outdoor/outdoor-20260208T235429Z-1-001/S6-main.mp4",
+                  "outdoor/outdoor-20260208T235429Z-1-001/S7-main.mp4",
+                  "outdoor/outdoor-20260208T235429Z-1-001/S8-main.mp4",
+                  "outdoor/Xuchu0102/VIDEO_1776017398786.mp4"
+              ],
+    "val":  [
+                "outdoor/dz01032026/1.mp4",
+                "outdoor/dz1/v1.mp4",
+                "outdoor/jeff 03-04/S1-main.mp4",
+                "outdoor/jeff 05-06/S1-main.mp4",
+                "outdoor/outdoor-20260208T235429Z-1-001/S1-main.mp4",
+                "outdoor/sifei/s1-main.mp4",
+                "outdoor/Xuchu0102/VIDEO_1776015522552(1).mp4"
+            ]
 }
