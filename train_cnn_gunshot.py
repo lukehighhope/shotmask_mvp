@@ -3,15 +3,19 @@
 Ref 优先：同目录 *cali.txt（校准 shot 时刻），若无则用 *.txt。
 网络从谱图学习特征，替代/辅助手工特征+LogReg。
 
+--use-split 时读取 traning data/dataset_split.json：其中 train 列表为训练集。
+划分约定（写进 JSON 时）：每个叶子文件夹内按文件名字排序，第一个 mp4 作为 val，其余有标注的作为 train。
+
 提高准确度：多训几轮(--epochs)、开数据增强(--augment)、学习率衰减(默认开)、继续训练(--resume)。
 Usage:
   python train_cnn_gunshot.py --folder 01032026 --epochs 50 --out outputs/cnn_gunshot.pt --save-config
   python train_cnn_gunshot.py --folder 01032026 --epochs 20 --resume --out outputs/cnn_gunshot.pt   # 在已有模型上再训 20 轮
   python train_cnn_gunshot.py --folder "traning data" --recursive   # 用 traning data 下所有子目录
-  python train_cnn_gunshot.py --use-split --epochs 50 --out outputs/cnn_gunshot.pt   # 按 dataset_split：每文件夹最后一支为 val，其余 train；新文件夹自动纳入
+  python train_cnn_gunshot.py --use-split --epochs 50 --out outputs/cnn_gunshot.pt   # 读取 dataset_split.json；划分通常是「每文件夹名字序第一个 mp4 = val，其余 = train」写入 JSON，本脚本只训 train 列表里的视频
 """
 import os
 import sys
+import json
 import argparse
 import numpy as np
 import soundfile as sf
@@ -20,7 +24,6 @@ from detectors.shot_audio import detect_shots_improved, load_calibrated_params
 from detectors.shot_cnn import (
     mel_at_time,
     build_cnn_model,
-    SEGMENT_DURATION,
     MEL_N_MELS,
     MEL_HOP,
 )
@@ -34,6 +37,23 @@ from train_logreg_multivideo import (
 
 GT_TOL = 0.04
 WINDOW_AFTER = 0.08
+
+
+def _merge_training_results(key, payload):
+    path = os.path.join("outputs", "training_results_latest.json")
+    os.makedirs("outputs", exist_ok=True)
+    data = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    from datetime import datetime, timezone
+    data[key] = payload
+    data["updated_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
 def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
@@ -62,9 +82,13 @@ def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
             data = np.mean(data, axis=1)
         data = np.asarray(data, dtype=np.float64)
         beep_t = get_beep_t_for_video(vp, audio_path, fps)
-        if beep_t <= 0:
-            print("  No beep (and no override), skip")
+        base = os.path.splitext(os.path.basename(vp))[0]
+        dirname = os.path.dirname(vp)
+        cali_path = os.path.join(dirname, base + "cali.txt")
+        if beep_t <= 0 and not os.path.isfile(cali_path):
+            print("  No beep and no *cali.txt, skip")
             continue
+        t0_filter = float(beep_t) if beep_t > 0 else 0.0
         ref_times, ref_src = get_ref_times_and_source(vp, beep_t)
         if not ref_times:
             print("  No ref (*cali.txt / *.txt), skip")
@@ -95,7 +119,7 @@ def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
         n_pos, n_neg = 0, 0
         for c in candidates:
             t = float(c["t"])
-            if t < beep_t:
+            if t < t0_filter:
                 continue
             label = 1 if any(abs(t - rt) <= GT_TOL for rt in ref_times) else 0
             mel = mel_at_time(data, sr, t)
@@ -113,7 +137,7 @@ def main():
     ap = argparse.ArgumentParser(description="Train CNN on mel-spectrograms for gunshot classification")
     ap.add_argument("--folder", default="01032026", help="Single folder with .mp4 and .txt ref (or root when --recursive)")
     ap.add_argument("--recursive", action="store_true", help="Use all immediate subfolders of --folder (e.g. traning data -> 01032026, outdoor-...)")
-    ap.add_argument("--use-split", action="store_true", help="Use dataset_split: train on all-but-last video per folder under traning data (val = last video per folder). New folders auto-included.")
+    ap.add_argument("--use-split", action="store_true", help="Use traning data/dataset_split.json: explicit \"train\" paths when present; else legacy split in dataset_split.py. Common rule: first sorted .mp4 per folder = val, rest = train.")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -142,7 +166,7 @@ def main():
         if not folders_with_videos:
             print("No train folders from dataset_split (traning data empty or no .mp4?)")
             return 1
-        print(f"Using dataset_split (last video per folder = val): {len(folders_with_videos)} folder(s)\n")
+        print(f"Using dataset_split.json (val = first sorted .mp4 per folder; this run = train paths only): {len(folders_with_videos)} folder(s)\n")
         mels, labels = [], []
         for folder, only_videos in folders_with_videos:
             m, l = build_mel_dataset(folder, only_videos=only_videos)
@@ -249,10 +273,22 @@ def main():
     }, args.out)
     print(f"Saved: {args.out} (best loss {best_loss:.4f} @ epoch {best_epoch})")
 
+    _merge_training_results("cnn_gunshot", {
+        "checkpoint": os.path.abspath(args.out),
+        "arch": arch,
+        "epochs_requested": args.epochs,
+        "end_epoch_counter": int(start_epoch + args.epochs),
+        "train_samples": int(len(X)),
+        "train_pos": int(n_pos),
+        "train_neg": int(n_neg),
+        "best_training_loss": float(best_loss),
+        "best_training_loss_epoch": int(best_epoch),
+        "split": "dataset_split.json train paths (--use-split)" if args.use_split else args.folder,
+    })
+
     if args.save_config:
         cfg_path = "calibrated_detector_params.json"
         if os.path.isfile(cfg_path):
-            import json
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             cfg["cnn_gunshot_path"] = os.path.abspath(args.out)

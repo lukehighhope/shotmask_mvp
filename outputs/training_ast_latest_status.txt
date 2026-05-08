@@ -1,0 +1,2 @@
+﻿LOG=outputs/training_ast_20260507_092848.log
+EXIT=0

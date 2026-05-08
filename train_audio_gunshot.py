@@ -9,6 +9,7 @@ Usage:
     python train_audio_gunshot.py                      # train + val
     python train_audio_gunshot.py --epochs 60 --augment
     python train_audio_gunshot.py --resume             # continue training
+    python train_audio_gunshot.py --device cpu          # avoid Windows GPU TDR timeouts
 """
 
 import os
@@ -26,7 +27,7 @@ DATA_ROOT  = Path("traning data")
 SPLIT_JSON = DATA_ROOT / "dataset_split.json"
 GT_TOL     = 0.05   # seconds: candidate within ±50ms of cali.txt = positive
 
-# --- helpers -----------------------------------------------------------------
+# ─── helpers ─────────────────────────────────────────────────────────────────
 
 def get_ffmpeg():
     exe = shutil.which("ffmpeg") or os.environ.get("FFMPEG")
@@ -68,11 +69,11 @@ def load_cali(video_path):
     return sorted(times)
 
 
-# --- dataset building --------------------------------------------------------
+# ─── dataset building ────────────────────────────────────────────────────────
 
 def build_dataset(video_paths, label="?"):
     """
-    For each video: run audio detector -> label candidates vs *cali.txt -> extract mels.
+    For each video: run audio detector → label candidates vs *cali.txt → extract mels.
     Returns (mels_array, labels_array).
     """
     from detectors.shot_audio  import detect_shots_improved, load_calibrated_params
@@ -152,7 +153,7 @@ def build_dataset(video_paths, label="?"):
     return np.stack(all_mels, axis=0), np.array(all_labels, dtype=np.float32)
 
 
-# --- training ----------------------------------------------------------------
+# ─── training ────────────────────────────────────────────────────────────────
 
 def train(args):
     try:
@@ -168,7 +169,7 @@ def train(args):
     from detectors.shot_ast import build_ast_model, PATCH_H, PATCH_W
     from detectors.shot_cnn import MEL_N_MELS
 
-    # -- load split --
+    # ── load split ──
     with open(SPLIT_JSON, encoding="utf-8-sig") as f:
         split = json.load(f)
 
@@ -177,7 +178,7 @@ def train(args):
 
     print(f"Train: {len(train_paths)} videos   Val: {len(val_paths)} videos\n")
 
-    # -- build / load cached datasets --
+    # ── build / load cached datasets ──
     cache_tr  = Path("outputs/cache_train.npz")
     cache_val = Path("outputs/cache_val.npz")
 
@@ -207,8 +208,17 @@ def train(args):
     if not has_val:
         print("  No val data or only one class — skipping val evaluation.")
 
-    # -- model --
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # ── model ──
+    if args.device == "cuda":
+        if not torch.cuda.is_available():
+            print("CUDA requested but unavailable; using CPU.")
+            device = torch.device("cpu")
+        else:
+            device = torch.device("cuda")
+    elif args.device == "cpu":
+        device = torch.device("cpu")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nDevice: {device}")
 
     model_kwargs = {
@@ -261,7 +271,7 @@ def train(args):
     print("-" * 50)
 
     for epoch in range(start_epoch, start_epoch + args.epochs):
-        # -- train --
+        # ── train ──
         model.train()
         total_loss, n_b = 0.0, 0
         for bx, by in loader:
@@ -291,14 +301,20 @@ def train(args):
         scheduler.step()
         avg_loss = total_loss / max(n_b, 1)
 
-        # -- val --
+        # ── val ──
         val_str = ""
         if has_val:
             model.eval()
+            bs = max(1, args.batch)
+            probs_chunks = []
             with torch.no_grad():
-                xv = torch.from_numpy(X_val).to(device)
-                logits = model(xv)
-                probs  = torch.sigmoid(logits).cpu().numpy()
+                for i in range(0, len(X_val), bs):
+                    xv = torch.from_numpy(X_val[i : i + bs]).to(device)
+                    logits = model(xv)
+                    probs_chunks.append(
+                        torch.sigmoid(logits).detach().cpu().numpy().reshape(-1)
+                    )
+            probs = np.concatenate(probs_chunks, axis=0)
             preds = (probs >= 0.5).astype(int)
             p, r, f1, _ = precision_recall_fscore_support(
                 y_val.astype(int), preds, average="binary", zero_division=0
@@ -344,7 +360,7 @@ def train(args):
     return 0
 
 
-# --- main --------------------------------------------------------------------
+# ─── main ────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(description="Train audio gunshot AST from dataset_split.json")
@@ -360,6 +376,12 @@ def main():
     ap.add_argument("--rebuild",     action="store_true", help="Ignore cache, rebuild dataset")
     ap.add_argument("--save-config", action="store_true",
                     help="Write path into calibrated_detector_params.json")
+    ap.add_argument(
+        "--device",
+        choices=("auto", "cuda", "cpu"),
+        default="auto",
+        help='Force device (default: auto). Use cpu if GPU hits Windows TDR timeouts.',
+    )
     args = ap.parse_args()
     sys.exit(train(args))
 

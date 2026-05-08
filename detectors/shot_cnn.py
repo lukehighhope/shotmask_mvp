@@ -1,6 +1,6 @@
 """
 用 CNN 在 Mel 谱图上做枪声二分类，由网络学习特征（替代/辅助手工特征+LogReg）。
-输入：以候选时刻为中心的短时窗 → Mel 谱图 → 2D CNN → P(枪声)。
+输入：以候选时刻 t 为锚的短时窗 [t − pre, t + post]（默认前 0.05s / 后 0.08s）→ Mel → 2D CNN → P(枪声)。
 """
 import os
 import json
@@ -13,7 +13,10 @@ import soundfile as sf
 MEL_N_MELS = 64
 MEL_HOP = 512
 MEL_N_FFT = 2048
-SEGMENT_DURATION = 0.35   # 以候选时刻为中心的前后窗总长 (s)
+# 不对称窗：更偏因果侧（枪口声后尾随能量/回声）
+SEGMENT_PRE_SEC = 0.05   # t 之前
+SEGMENT_POST_SEC = 0.08  # t 之后
+SEGMENT_DURATION = SEGMENT_PRE_SEC + SEGMENT_POST_SEC  # 0.13s（供外部读取总长）
 SR_TARGET = 48000
 
 
@@ -30,35 +33,47 @@ def _mel_spec(audio_1d, sr, n_mels=MEL_N_MELS, hop=MEL_HOP, n_fft=MEL_N_FFT):
     return mel.astype(np.float32)
 
 
-def audio_segment_at(audio_1d, sr, t_center_sec, duration_sec=SEGMENT_DURATION):
-    """取以 t_center_sec 为中心、总长 duration_sec 的音频段；不足则补零。"""
-    n = int(sr * duration_sec)
-    half = n // 2
-    center_idx = int(round(t_center_sec * sr))
-    start = center_idx - half
-    end = center_idx + half
-    if start < 0:
-        pad_left = -start
-        start = 0
+def audio_segment_at(
+    audio_1d,
+    sr,
+    t_center_sec,
+    pre_sec=SEGMENT_PRE_SEC,
+    post_sec=SEGMENT_POST_SEC,
+    *,
+    duration_sec=None,
+):
+    """
+    取 [t_center_sec - pre_sec, t_center_sec + post_sec]；越界样本用零填满。
+    若传入 duration_sec（旧 API），退化为对称窗：总长 duration_sec、t 居中。
+    """
+    if duration_sec is not None:
+        n = max(1, int(sr * float(duration_sec)))
+        half = n // 2
+        c = int(round(float(t_center_sec) * sr))
+        start_idx, end_idx = c - half, c + half
     else:
-        pad_left = 0
-    if end > len(audio_1d):
-        pad_right = end - len(audio_1d)
-        end = len(audio_1d)
-    else:
-        pad_right = 0
-    seg = audio_1d[start:end]
-    if pad_left or pad_right:
-        seg = np.pad(seg, (pad_left, pad_right), mode="constant", constant_values=0.0)
-    return seg.astype(np.float32)
+        start_idx = int(round((float(t_center_sec) - float(pre_sec)) * sr))
+        end_idx = int(round((float(t_center_sec) + float(post_sec)) * sr))
+    la = len(audio_1d)
+    out_len = max(0, end_idx - start_idx)
+    if out_len == 0:
+        return np.array([], dtype=np.float32)
+    out = np.zeros(out_len, dtype=np.float64)
+    src_start = max(0, min(start_idx, la))
+    src_end = max(src_start, min(end_idx, la))
+    if src_end > src_start:
+        dst0 = src_start - start_idx
+        chunk = audio_1d[src_start:src_end].astype(np.float64, copy=False)
+        out[dst0 : dst0 + len(chunk)] = chunk
+    return out.astype(np.float32)
 
 
 def mel_at_time(audio_1d, sr, t_sec, n_mels=MEL_N_MELS, hop=MEL_HOP, n_fft=MEL_N_FFT, n_frames=32):
     """
-    在 t_sec 处截取 SEGMENT_DURATION 秒，做 Mel 谱图，并裁剪/填充到 (n_mels, n_frames)。
+    在 t_sec 处截取 [t−pre, t+post]（默认 0.05s / 0.08s），做 Mel 谱图，并裁剪/填充到 (n_mels, n_frames)。
     返回 shape (1, n_mels, n_frames) 供 CNN 输入。
     """
-    seg = audio_segment_at(audio_1d, sr, t_sec, duration_sec=SEGMENT_DURATION)
+    seg = audio_segment_at(audio_1d, sr, t_sec)
     mel = _mel_spec(seg, SR_TARGET, n_mels=n_mels, hop=hop, n_fft=n_fft)
     # mel: (n_mels, time)
     if mel.shape[1] >= n_frames:

@@ -1,0 +1,15 @@
+{
+  "cnn_gunshot": {
+    "checkpoint": "C:\\Users\\Cao\\Downloads\\shotmask_mvp\\outputs\\cnn_gunshot.pt",
+    "arch": "default",
+    "epochs_requested": 50,
+    "end_epoch_counter": 50,
+    "train_samples": 11056,
+    "train_pos": 1153,
+    "train_neg": 9903,
+    "best_training_loss": 0.1891698631743303,
+    "best_training_loss_epoch": 50,
+    "split": "dataset_split.json train paths (--use-split)"
+  },
+  "updated_utc": "2026-05-08T02:55:35Z"
+}

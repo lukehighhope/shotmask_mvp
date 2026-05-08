@@ -13,7 +13,7 @@ import numpy as np
 import soundfile as sf
 
 from detectors.shot_audio import detect_shots_improved, load_calibrated_params
-from detectors.shot_cnn import mel_at_time, MEL_N_MELS, SEGMENT_DURATION
+from detectors.shot_cnn import mel_at_time, MEL_N_MELS
 from detectors.shot_ast import build_ast_model, PATCH_H, PATCH_W
 from ref_from_image import get_ref_times_and_source, get_beep_t_for_video
 from train_logreg_multivideo import (

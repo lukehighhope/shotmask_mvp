@@ -10,6 +10,9 @@ try:
 except ImportError:
     HAS_LIBROSA = False
 
+# Sentinel: detect_shots(..., min_confidence_threshold_override=...) default vs explicit None
+_MISSING = object()
+
 CALIBRATED_PARAMS_FILENAME = "calibrated_detector_params.json"
 
 
@@ -164,6 +167,23 @@ def refine_onset_time(data, sr, t_sec, envelope=None, window_sec=0.06, onset_fra
     idx = int(np.argmax(diff))
     refined_sample = start + idx
     return float(refined_sample) / sr
+
+
+def refine_envelope_peak_time(data, sr, t_sec, envelope=None, window_sec=0.06):
+    """Align marker with local envelope maximum (typically later than perceptual onset)."""
+    if envelope is None:
+        env_win = max(1, int(sr * 0.003))
+        energy = np.abs(np.asarray(data, dtype=np.float64))
+        envelope = np.convolve(energy, np.ones(env_win) / env_win, mode="same")
+    center = int(round(t_sec * sr))
+    half = int(round(sr * window_sec / 2.0))
+    start = max(0, center - half)
+    end = min(len(envelope), center + half)
+    if end - start < 2:
+        return t_sec
+    seg = envelope[start:end]
+    idx_rel = int(np.argmax(seg))
+    return float(start + idx_rel) / sr
 
 
 def adaptive_threshold_mad(signal, window_sec=2.0, k=6.0, sr=None):
@@ -329,6 +349,7 @@ def detect_shots(
     return_candidates=False,
     use_cnn_only=None,
     use_ast_gunshot=None,
+    min_confidence_threshold_override=_MISSING,
 ):
     """
     Detect gunshot times from audio using improved two-stage multi-feature approach.
@@ -339,6 +360,8 @@ def detect_shots(
     Args:
         use_improved: If True, use new two-stage approach; else use legacy method
         export_diagnostics: If True, export diagnostic curves (env, flux, score) for analysis
+        min_confidence_threshold_override: If not the default sentinel, replaces calibrated
+            min_confidence_threshold for Stage2 (use None to skip that filter).
     """
     if use_calibrated:
         cal = load_calibrated_params()
@@ -370,6 +393,8 @@ def detect_shots(
         score_weights = cal.get("score_weights", None)  # [onset, r1, flatness, attack, r2_penalty]
         # min_confidence_threshold filters final shots by confidence; support legacy key min_score_threshold
         min_confidence_threshold = cal.get("min_confidence_threshold", cal.get("min_score_threshold", None))
+        if min_confidence_threshold_override is not _MISSING:
+            min_confidence_threshold = min_confidence_threshold_override
         logreg_model = cal.get("logreg_model", None)
         scene_config = cal.get("scene_config", None)  # indoor/outdoor/near/far
         use_mfcc = cal.get("use_mfcc", False)  # optional MFCC term in scoring (requires librosa)
@@ -390,6 +415,10 @@ def detect_shots(
         cnn_fusion_weight = float(cal.get("cnn_fusion_weight", 0.5))  # final_conf = (1-w)*logreg + w*cnn
         use_cnn_only_flag = use_cnn_only if use_cnn_only is not None else bool(cal.get("use_cnn_only", False))
         use_ast_gunshot_flag = use_ast_gunshot if use_ast_gunshot is not None else bool(cal.get("use_ast_gunshot", bool(cal.get("ast_gunshot_path") and not cal.get("cnn_gunshot_path"))))
+
+        _marker_align = str(cal.get("shot_marker_alignment", "onset")).strip().lower()
+        if _marker_align not in ("onset", "envelope_peak", "none"):
+            _marker_align = "onset"
 
         return detect_shots_improved(
             data, sr, fps,
@@ -414,6 +443,8 @@ def detect_shots(
             use_ast_gunshot=use_ast_gunshot_flag,
             cnn_fusion_weight=cnn_fusion_weight,
             use_cnn_only=use_cnn_only_flag,
+            marker_time_alignment=_marker_align,
+            marker_refine_window_sec=float(cal.get("marker_refine_window_sec", 0.06)),
         )
     
     # Legacy method (original implementation)
@@ -582,6 +613,8 @@ def detect_shots_improved(
     use_ast_gunshot=False,
     cnn_fusion_weight=0.5,
     use_cnn_only=False,
+    marker_time_alignment="onset",
+    marker_refine_window_sec=0.06,
 ):
     """
     Improved two-stage gunshot detection with multi-feature fusion.
@@ -599,7 +632,14 @@ def detect_shots_improved(
         logreg_model: Optional logistic regression model dict (weights/bias/mean/std).
         use_cnn_only: If True and cnn_model set, score candidates with CNN only (no LogReg); confidence = CNN prob.
         return_candidates: If True, return (shots, candidate_features).
+        marker_time_alignment: "onset" (early, perceptual rise), "envelope_peak" (max |envelope| in window), or "none".
+        marker_refine_window_sec: ±half-width (s) for refinement window (default 0.06).
     """
+    align = (marker_time_alignment or "onset").strip().lower()
+    if align not in ("onset", "envelope_peak", "none"):
+        align = "onset"
+    win_ref = max(0.01, float(marker_refine_window_sec))
+
     # STFT parameters; n_frames is the single source of truth for frame axis
     hop_length = 256  # ~5.3ms at 48kHz
     n_fft = 1024      # ~21ms at 48kHz
@@ -949,6 +989,15 @@ def detect_shots_improved(
     else:
         candidate_scores = [0.0] * len(candidate_features)
 
+    # Cal may set use_cnn_only=True while both AST/CNN failed to load → logreg/heuristic leaves
+    # no per-feat "confidence"; downstream assumes it exists (KeyError).
+    if (
+        use_cnn_only
+        and len(candidate_features) > 0
+        and not all("confidence" in f for f in candidate_features)
+    ):
+        use_cnn_only = False
+
     if not use_cnn_only:
         # Fingerprint v2: soft scoring (add/subtract points), not hard gate
         FINGERPRINT_W_ATTACK = 0.08
@@ -1024,10 +1073,13 @@ def detect_shots_improved(
             "E_high_ratio": round(float(best_candidate.get("E_high_ratio", 0)), 3),
         })
 
-    # Onset refinement: replace peak time with true onset (max attack) in ±60ms
-    if len(shots) > 0 and envelope is not None:
+    # Marker refinement: onset (early) vs envelope peak vs skip
+    if len(shots) > 0 and envelope is not None and align != "none":
         for s in shots:
-            t_ref = refine_onset_time(data, sr, s["t"], envelope=envelope, window_sec=0.06)
+            if align == "envelope_peak":
+                t_ref = refine_envelope_peak_time(data, sr, s["t"], envelope=envelope, window_sec=win_ref)
+            else:
+                t_ref = refine_onset_time(data, sr, s["t"], envelope=envelope, window_sec=win_ref)
             s["t"] = round(t_ref, 4)
             s["frame"] = round(s["t"] * fps)
         shots.sort(key=lambda x: x["t"])

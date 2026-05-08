@@ -5,6 +5,7 @@
 Usage:
   python annotate_shots.py --video "test data/v1.mp4"
   python annotate_shots.py --video "traning data/jeff 03-04/S1-main.mp4"
+  （默认会用校准置信度阈值 + 枪声NMS；超多候选时用 --annotate-loose 相当于旧逻辑）
 
 操作说明：
   - 右键点击波形       → 新增枪声标注线（黑线）
@@ -40,10 +41,11 @@ from extract_audio_plot import (
 )
 from detectors.beep import detect_beeps
 from detectors.shot_audio import detect_shots
-from main import get_ffmpeg_cmd, get_ffprobe_cmd, ffprobe_info
+from main import get_ffmpeg_cmd, get_ffprobe_cmd, ffprobe_info, non_maximum_suppression
 import subprocess
 import json
 import threading
+import tempfile
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import tkinter as tk
@@ -147,13 +149,17 @@ def _resolve_shot_detector_backend(anno_dir, video_base, cali_path, session_defa
     return d, f"session default ({d})"
 
 
-def _detect_shots_with_backend(audio_mono, fps, backend):
+def _detect_shots_with_backend(audio_mono, fps, backend, loose_min_confidence=False):
+    """Pass loose_min_confidence=True to bypass calibrated min_confidence_threshold (hundreds of lines; old behavior)."""
+    kw = {}
+    if loose_min_confidence:
+        kw["min_confidence_threshold_override"] = None
     backend = (backend or "auto").lower()
     if backend == "ast":
-        return detect_shots(audio_mono, fps, use_ast_gunshot=True)
+        return detect_shots(audio_mono, fps, use_ast_gunshot=True, **kw)
     if backend == "cnn":
-        return detect_shots(audio_mono, fps, use_ast_gunshot=False)
-    return detect_shots(audio_mono, fps)
+        return detect_shots(audio_mono, fps, use_ast_gunshot=False, **kw)
+    return detect_shots(audio_mono, fps, **kw)
 
 
 def _patch_html_playback_speed(html_path, default_speed=0.5):
@@ -169,6 +175,15 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     """
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
+
+    # Point <video> at server /video (same pipe as POST /load_video + HTTP Range seeks).
+    # Relative src only matches when the mp4 sits under serve_dir; wrong/moved annotate.html ⇒ video ≠ waveform audio.
+    html, _n_vid = re.subn(
+        r'(<video id="vid" src=")([^"]*)(")',
+        r'\1/video"',
+        html,
+        count=1,
+    )
 
     # ── 0. Hide top hint bar ─────────────────────────────────────────
     html = html.replace(
@@ -543,9 +558,11 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
       }
       var hint=document.getElementById('saveDirHint');
       if(hint){
+        var rowV=D.annotation_video_path?('Video: '+D.annotation_video_path):'';
         var row2=(D.calibration_save_path?'shots: '+splitPath(D.calibration_save_path)[1]:'')+
                  (D.calibration_beep_path?'   beep: '+splitPath(D.calibration_beep_path)[1]:'');
-        hint.textContent=dir?('Save dir: '+dir+'  |  '+row2):row2;
+        var rowSave=dir?('Save dir: '+dir+'  |  '+row2):row2;
+        hint.textContent=(rowV?(rowV+'  |  '):'')+(rowSave||rowV||'');
       }
     };
     window._updateSavePathDisplay();
@@ -582,7 +599,14 @@ def _find_annotation_dir(video_base, start_dir):
     return start_dir
 
 
-def _prepare_video(video_path, ffmpeg, force_detect=False, session_shot_backend="auto"):
+def _prepare_video(
+    video_path,
+    ffmpeg,
+    force_detect=False,
+    session_shot_backend="auto",
+    annotate_loose_min_conf=False,
+    annotate_shot_nms_sec=0.12,
+):
     """Extract audio, load or detect annotations, build waveform data.
     Returns (cal_data_dict, video_dir, video_base, anno_dir).
     Always looks for annotation files in the video's own folder only.
@@ -648,13 +672,24 @@ def _prepare_video(video_path, ffmpeg, force_detect=False, session_shot_backend=
     if not has_cali:
         print("Detecting gunshots...")
         try:
-            t0_beep = beep_times[-1] if beep_times else 0.0
+            # Shots must be at/after the start beep. Use the *earliest* beep time: a false
+            # detection late in the file made beep_times[-1] huge and removed every shot.
+            t0_beep = min(beep_times) if beep_times else 0.0
             back, src = _resolve_shot_detector_backend(
                 anno_dir, video_base, cali_path, session_shot_backend
             )
             print(f"  Shot detector backend: {back} ({src})")
-            shots = _detect_shots_with_backend(audio_mono, fps, back)
+            shots = _detect_shots_with_backend(
+                audio_mono, fps, back, loose_min_confidence=annotate_loose_min_conf
+            )
+            n_before_t0 = len(shots)
             shots = [s for s in shots if float(s["t"]) >= t0_beep]
+            if n_before_t0 and not shots:
+                print(f"  Warning: all shots dropped by t>={t0_beep:.3f}s beep cut (earliest beep); check beep detection")
+            if annotate_shot_nms_sec and annotate_shot_nms_sec > 0 and shots:
+                n_nms_before = len(shots)
+                shots = non_maximum_suppression(shots, time_threshold_s=float(annotate_shot_nms_sec))
+                print(f"  Shot NMS ({annotate_shot_nms_sec:.3f}s): {len(shots)}/{n_nms_before}")
             shot_times = [float(s["t"]) for s in shots]
             print(f"  Detected {len(shot_times)} shot(s)")
         except Exception as e:
@@ -670,12 +705,31 @@ def _prepare_video(video_path, ffmpeg, force_detect=False, session_shot_backend=
     cal_data["video_base_name"]       = video_base
     cal_data["calibration_save_path"] = cali_path
     cal_data["calibration_beep_path"] = beep_path
+    cal_data["annotation_video_path"] = video
     return cal_data, video_dir, video_base, anno_dir
+
+
+def _materialize_annotation_html(cal_data, video_path, default_speed=0.5):
+    """Build full annotate viewer HTML for current cal_data + video (avoid stale disk HTML on refresh)."""
+    fd, tmp_path = tempfile.mkstemp(suffix=".html")
+    os.close(fd)
+    try:
+        write_calibration_viewer_html(tmp_path, cal_data, video_path=video_path)
+        _patch_html_playback_speed(tmp_path, default_speed=default_speed)
+        with open(tmp_path, encoding="utf-8") as f:
+            return f.read()
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 
 def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                           initial_video_path=None, initial_save_dir=None,
-                          default_speed=0.5, session_shot_backend="auto"):
+                          initial_cal_data=None,
+                          default_speed=0.5, session_shot_backend="auto",
+                          annotate_loose_min_conf=False, annotate_shot_nms_sec=0.12):
     """HTTP server for the annotation tool.
 
     Endpoints:
@@ -691,12 +745,32 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
         "video_path": initial_video_path,
         "save_dir":   initial_save_dir or serve_dir,
         "session_shot_backend": session_shot_backend,
+        "cal_data":   initial_cal_data,
+        "annotate_html_bytes": None,
+        "annotate_loose_min_conf": annotate_loose_min_conf,
+        "annotate_shot_nms_sec": float(annotate_shot_nms_sec),
     }
+
+    def _rebuild_annotate_html_cache():
+        """Served annotate page must match state — otherwise F5 keeps an old embedded D while /video follows session."""
+        cal = state.get("cal_data")
+        vp = state.get("video_path")
+        if not cal or not vp or not isinstance(vp, str) or not os.path.isfile(vp):
+            state["annotate_html_bytes"] = None
+            return
+        try:
+            html = _materialize_annotation_html(cal, vp, default_speed=default_speed)
+            state["annotate_html_bytes"] = html.encode("utf-8")
+        except Exception as e:
+            print(f"[annotate_html] Rebuild failed: {e}")
+            state["annotate_html_bytes"] = None
+
+    _rebuild_annotate_html_cache()
 
     def _norm(p):
         return os.path.normcase(os.path.normpath(p))
 
-    def _serve_file(handler, file_path):
+    def _serve_file(handler, file_path, cache_control=None):
         """Send file with HTTP Range support (needed for HTML5 video seeking)."""
         ext = os.path.splitext(file_path)[1].lower()
         ctype_map = {
@@ -723,6 +797,8 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                 handler.send_header("Content-Length", length)
                 handler.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
                 handler.send_header("Accept-Ranges", "bytes")
+                if cache_control:
+                    handler.send_header("Cache-Control", cache_control)
                 handler.end_headers()
                 handler.wfile.write(data)
             else:
@@ -732,6 +808,8 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                 handler.send_header("Content-Type", ctype)
                 handler.send_header("Content-Length", file_size)
                 handler.send_header("Accept-Ranges", "bytes")
+                if cache_control:
+                    handler.send_header("Cache-Control", cache_control)
                 handler.end_headers()
                 handler.wfile.write(data)
         except Exception:
@@ -743,13 +821,29 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
 
             # Special: open native file picker and return chosen path as JSON
             if path == "/open_file_dialog":
+                def _pick_initialdir():
+                    # Without initialdir, Windows remembers an unrelated folder (e.g. last parpar browse).
+                    v = state.get("video_path")
+                    if isinstance(v, str):
+                        vd = os.path.dirname(os.path.abspath(v))
+                        if os.path.isdir(vd):
+                            return vd
+                    sd = state.get("save_dir")
+                    if isinstance(sd, str) and os.path.isdir(sd):
+                        return sd
+                    return serve_dir if os.path.isdir(serve_dir) else os.getcwd()
+
                 def _pick():
                     root = tk.Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
                     chosen = filedialog.askopenfilename(
                         title="Select video file",
-                        filetypes=[("Video files", "*.mp4 *.mov *.avi *.mkv *.webm"), ("All files", "*.*")],
+                        filetypes=[
+                            ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm"),
+                            ("All files", "*.*"),
+                        ],
+                        initialdir=_pick_initialdir(),
                     )
                     root.destroy()
                     return chosen
@@ -766,7 +860,11 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
             if path == "/video":
                 vp = state.get("video_path")
                 if vp and os.path.isfile(vp):
-                    _serve_file(self, vp)
+                    _serve_file(
+                        self,
+                        vp,
+                        cache_control="no-store, max-age=0, must-revalidate",
+                    )
                 else:
                     self.send_error(404)
                 return
@@ -778,6 +876,18 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
             if ".." in path:
                 self.send_error(403)
                 return
+
+            # Always serve annotate page from RAM so refresh matches current session (/video path + embedded D).
+            if path == html_basename:
+                blob = state.get("annotate_html_bytes")
+                if blob:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(blob)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(blob)
+                    return
 
             file_path = os.path.abspath(os.path.join(serve_dir, path))
             if not _norm(file_path).startswith(_norm(serve_dir)) or not os.path.isfile(file_path):
@@ -830,9 +940,13 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                         ffmpeg_cmd,
                         force_detect=False,
                         session_shot_backend=state.get("session_shot_backend", "auto"),
+                        annotate_loose_min_conf=bool(state.get("annotate_loose_min_conf", False)),
+                        annotate_shot_nms_sec=float(state.get("annotate_shot_nms_sec", 0.12)),
                     )
                     state["video_path"] = os.path.abspath(os.path.normpath(vpath))
                     state["save_dir"]   = anno_dir  # save to annotation dir, not tmp/
+                    state["cal_data"]   = cal_data
+                    _rebuild_annotate_html_cache()
                     print(f"[load_video] Sending response for {video_base} ...")
                     try:
                         payload = json.dumps({"ok": True, "data": cal_data}).encode("utf-8")
@@ -862,6 +976,8 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
     server = HTTPServer(("127.0.0.1", port), AnnotationHandler)
     url = f"http://127.0.0.1:{port}/{html_basename}"
     print(f"Annotation server: {url}  (Ctrl+C to stop)")
+    if initial_video_path:
+        print(f"Session video (/video + F5 annotate page): {initial_video_path}")
     threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
     try:
         server.serve_forever()
@@ -890,6 +1006,18 @@ def main():
     )
     ap.add_argument("--out-dir", default=None,
                     help="HTML output directory (default: same as video)")
+    ap.add_argument(
+        "--annotate-loose",
+        action="store_true",
+        help="Gunshot hints: skip calibrated confidence threshold → many extras (legacy; use rarely).",
+    )
+    ap.add_argument(
+        "--shot-nms",
+        type=float,
+        default=0.12,
+        metavar="SEC",
+        help="Merge detections within SEC s, keep highest confidence (default 0.12; 0=off).",
+    )
     args = ap.parse_args()
 
     ffmpeg = get_ffmpeg_cmd()
@@ -902,9 +1030,14 @@ def main():
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
+        _here = os.path.dirname(os.path.abspath(__file__))
         chosen = filedialog.askopenfilename(
             title="Select video file to annotate",
-            filetypes=[("Video files", "*.mp4 *.mov *.avi *.mkv *.webm"), ("All files", "*.*")],
+            filetypes=[
+                ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm"),
+                ("All files", "*.*"),
+            ],
+            initialdir=_here if os.path.isdir(_here) else os.getcwd(),
         )
         root.destroy()
         if not chosen:
@@ -927,6 +1060,8 @@ def main():
         ffmpeg,
         force_detect=args.no_detect,
         session_shot_backend=args.shot_backend,
+        annotate_loose_min_conf=args.annotate_loose,
+        annotate_shot_nms_sec=args.shot_nms,
     )
 
     # ── 2. Generate HTML ──────────────────────────────────────────────
@@ -949,8 +1084,11 @@ def main():
         ffmpeg_cmd=ffmpeg,
         initial_video_path=video,
         initial_save_dir=anno_dir,
+        initial_cal_data=cal_data,
         default_speed=args.speed,
         session_shot_backend=args.shot_backend,
+        annotate_loose_min_conf=args.annotate_loose,
+        annotate_shot_nms_sec=args.shot_nms,
     )
     return 0
 

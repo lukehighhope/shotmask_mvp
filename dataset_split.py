@@ -2,10 +2,13 @@
 Read train/val split for traning data.
 Split is defined in traning data/dataset_split.json.
 
-Current rule: last_video_per_folder — in each folder, the last video (by name) is val, the rest are train.
+Supported:
+- Explicit lists: \"train\" / \"val\" with paths relative to traning data/
+- Legacy: last_video_per_folder + \"folders\"
 """
 import os
 import json
+from collections import defaultdict
 
 
 def _root():
@@ -90,11 +93,34 @@ def get_train_and_val_video_paths():
     return get_train_video_paths(), get_val_video_paths()
 
 
+def _train_folders_from_explicit_train_list(root, train_rels):
+    """Group explicit train relative paths by parent folder -> [(folder_abs, set(basenames)), ...]."""
+    by_folder = defaultdict(set)
+    for rel in train_rels:
+        rel = rel.replace("\\", "/").strip()
+        if not rel.lower().endswith(".mp4"):
+            continue
+        full = os.path.normpath(os.path.join(root, rel))
+        folder = os.path.dirname(full)
+        base = os.path.basename(full)
+        by_folder[folder].add(base)
+    return [(fd, names) for fd, names in sorted(by_folder.items())]
+
+
 def get_train_folders_with_videos():
     """For training scripts: list of (folder_abs_path, set_of_train_video_basenames).
-    Each folder gets only its train videos (all .mp4 in folder except the last by name).
-    New subfolders under traning data are included when folders in JSON is empty."""
+    Uses explicit \"train\" list in dataset_split.json when present; otherwise
+    last_video_per_folder (all .mp4 in folder except last by name).
+    """
     root = _root()
+    path = os.path.join(root, "dataset_split.json")
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+        train_list = data.get("train")
+        if isinstance(train_list, list) and train_list:
+            return _train_folders_from_explicit_train_list(root, train_list)
+
     data = _load_split()
     if data.get("split_type") != "last_video_per_folder":
         return []

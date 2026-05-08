@@ -1,0 +1,1 @@
+﻿EXIT=0 LOG=outputs/train_cnn_20260507_223552.log
