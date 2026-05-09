@@ -1,0 +1,14 @@
+---
+description: Canonical files for ShotMask training/eval documentation and human-readable factor notes
+alwaysApply: true
+---
+
+# Parameter & evaluation record files
+
+When discussing training runs, evaluation tolerance (tol), or detector tuning context, treat these three as the project’s **canonical references**:
+
+1. **`keyfactors.txt`** — Human-readable knobs and behavior (annotate, detection stages, tol / eval notes in §6).
+2. **`outputs/training_results_latest.json`** — Latest CNN training snapshot plus `evaluation` (e.g. `match_tolerance_sec` aligned with `evaluate_multivideo.py` default).
+3. **`outputs/training_history.jsonl`** — One JSON object per training run (append-only log).
+
+Do not contradict these without checking the repo; if the user updates tol or training, suggest updating the matching fields in `training_results_latest.json` / history line and §6 of `keyfactors.txt` when relevant.

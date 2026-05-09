@@ -1,6 +1,6 @@
 ShotMask / 枪声标注与探测 — 要点速查
-（说明：第一层数字 = 大类，共 5 类；第二层 x.y = 该大类下的条目，共 10 条。
-  未特别注明时，校准项在 calibrated_detector_params.json。）
+（说明：第一层数字 = 大类；第二层 x.y = 该大类下的条目。
+  未特别注明时，运行时校准项在 calibrated_detector_params.json。）
 
 ────────────────────────────────────────
 
@@ -113,5 +113,37 @@ ShotMask / 枪声标注与探测 — 要点速查
      含义：控制 onset 候选疏密与簇合并尺度；过小 → 噪声/重复峰多；过大 → 易并掉相邻真枪。
 
      与 2.x（置信度/NMS）不同层，但同属「量减少 / 误检」相关旋钮。
+
+
+
+────────────────────────────────────────
+
+6 评测与参数归档（指标对齐、记在哪儿）
+
+────────────────────────────────────────
+
+6.1  evaluate_multivideo.py：ref 与检出时刻匹配容差 tol
+
+     默认：TOL = 0.04 s（代码常量）→ 每条真值时刻与「最近一条检出」的时间差 ≤ 0.04 s 计为 TP（对称距离，非半窗倍乘）。
+
+     命令行：--tol <秒> 覆盖；与训练损失无关，只影响离线 P/R/F1 报告。
+
+     对比模型或不同 checkpoints 时应有意识固定同一 tol；容差放大通常使 P/R/F1 变好看。
+
+     与默认 tol 同步的说明写在 outputs/training_results_latest.json → evaluation 块（machine-readable）。
+
+
+6.2  outputs/training_history.jsonl
+
+     含义：train_cnn_gunshot 每次跑完追加一行 JSON（含当次超参、样本数、best loss 等）；历史上若曾手写回填，也会带 evaluate_multivideo_match_tolerance_* 等字段。
+
+
+6.3  「程序员是不是更喜欢用 JSON 记这些？」
+
+     • 记「给程序读」的字段（路径、数字、版本）——JSON（或 YAML/TOML）很常见：一行/一个文件就能被脚本、CI、notebook 直接解析，且多数语言标准库或一行依赖即可读写。
+
+     • 记「给人读」的设计说明、旋钮含义、操作步骤——仍是纯文本 / Markdown 更合适（如此 keyfactors.txt）；二者常并存：.txt/.md 解释「是什么」，.json 保存「具体数值与路径」。
+
+     • JSONL（每行一个 JSON）适合日志式追加（training_history.jsonl），比单个巨大 JSON 数组更易尾部追加、流式处理。
 
 

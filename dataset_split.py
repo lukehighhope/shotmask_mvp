@@ -45,9 +45,34 @@ def _mp4_in_folder(folder_path):
     )
 
 
+def _explicit_mp4_paths_relative_to_root(root, rels):
+    """Resolve list of paths relative to training data root; skip missing files."""
+    out = []
+    for rel in rels or []:
+        if not isinstance(rel, str):
+            continue
+        rel = rel.replace("\\", "/").strip()
+        if not rel.lower().endswith(".mp4"):
+            continue
+        full = os.path.normpath(os.path.join(root, rel))
+        if os.path.isfile(full):
+            out.append(full)
+    return out
+
+
 def get_train_video_paths():
-    """All videos that are NOT the last in their folder. Returns list of absolute paths."""
+    """Training video absolute paths: explicit \"train\" list in dataset_split.json if present, else all but last mp4 per folder (legacy)."""
     root = _root()
+    path = os.path.join(root, "dataset_split.json")
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        train_list = data.get("train")
+        if isinstance(train_list, list) and train_list:
+            return _explicit_mp4_paths_relative_to_root(root, train_list)
     data = _load_split()
     if data.get("split_type") != "last_video_per_folder":
         return []
@@ -62,8 +87,18 @@ def get_train_video_paths():
 
 
 def get_val_video_paths():
-    """Last video in each folder. Returns list of absolute paths."""
+    """Validation video absolute paths: explicit \"val\" list in dataset_split.json if present, else last mp4 per folder (legacy)."""
     root = _root()
+    path = os.path.join(root, "dataset_split.json")
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        val_list = data.get("val")
+        if isinstance(val_list, list) and val_list:
+            return _explicit_mp4_paths_relative_to_root(root, val_list)
     data = _load_split()
     if data.get("split_type") != "last_video_per_folder":
         return []

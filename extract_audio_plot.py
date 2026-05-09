@@ -581,6 +581,18 @@ if(vid&&c){ var rect=c.getBoundingClientRect(); var rx=e.clientX-rect.left; var 
         wrap_top = "calc(60px + 58vh)"
         video_box_top = "60px"
     video_base = data.get("video_base_name", "video")
+    _dur = data.get("duration")
+    _ann = data.get("annotation_video_path")
+    _vp_in = os.path.abspath(os.path.normpath(video_path)) if video_path and os.path.isfile(video_path) else None
+    _n_t = len(data.get("t") or [])
+    print(
+        "[write_calibration_viewer_html] "
+        f"waveform D: duration={_dur!r} len(t)={_n_t} | "
+        f"D.annotation_video_path={_ann!r} | "
+        f"arg video_path={_vp_in!r} | "
+        f"page title base={video_base!r}",
+        flush=True,
+    )
     html_content = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Shot calibration - {html.escape(video_base)}</title>
 <style>

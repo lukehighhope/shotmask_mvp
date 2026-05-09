@@ -29,6 +29,10 @@ import sys
 sys.stdout.reconfigure(line_buffering=True)
 import argparse
 import re
+import time
+import html
+import hashlib
+import secrets
 
 # 把项目根目录加入 import 路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +57,30 @@ from tkinter import filedialog
 
 
 _ALLOWED_BACKENDS = frozenset({"auto", "ast", "cnn"})
+
+# Repo root (annotate_shots.py directory). Used as default startup picker folder.
+_ANNOTATE_SHOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_picker_root(cli_dir: str | None) -> str | None:
+    """Pinned folder for Tk file dialogs: --picker-dir overrides env SHOTMASK_PICKER_DIR."""
+    d = (cli_dir or os.environ.get("SHOTMASK_PICKER_DIR") or "").strip()
+    if not d:
+        return None
+    d = os.path.abspath(os.path.expanduser(os.path.expandvars(d)))
+    if os.path.isdir(d):
+        return d
+    print(f"Warning: --picker-dir / SHOTMASK_PICKER_DIR is not a directory (ignored): {d}", flush=True)
+    return None
+
+
+def _tk_sync_before_dialog(root: tk.Tk) -> None:
+    """Improves chances Windows honors ``initialdir`` instead of reusing last browse path for py.exe."""
+    try:
+        root.update_idletasks()
+        root.update()
+    except Exception:
+        pass
 
 
 def _split_cali_preamble_lines(lines):
@@ -162,7 +190,62 @@ def _detect_shots_with_backend(audio_mono, fps, backend, loose_min_confidence=Fa
     return detect_shots(audio_mono, fps, **kw)
 
 
-def _patch_html_playback_speed(html_path, default_speed=0.5):
+_TOOLBAR_STATIC_MARK = 'id="btnAnnotateSave"'
+
+
+def _inject_static_toolbar_html(html: str) -> str:
+    """Insert Stage / Time / Save time into #ctrl if missing (idempotent).
+
+    Handles markup variants: ``<button id="btnPlay"`` vs ``<button type="button" id="btnPlay"``,
+    or content between ``<div id="ctrl"...>`` and Play that breaks the naive regex.
+    """
+    if _TOOLBAR_STATIC_MARK in html:
+        return html
+    block = (
+        '<!-- shotmask: Time / Save time toolbar -->'
+        '<span id="stageTimeDisplay" style="color:#ccc;font-size:13px;font-weight:bold;min-width:3em;margin-right:6px;"></span>'
+        '<button type="button" id="btnAnnotateTime" title="Last shot − earliest beep (stage time)" '
+        'style="padding:6px 14px;background:#446;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:16px;">Time</button>'
+        '<button type="button" id="btnAnnotateSave" '
+        'style="padding:6px 18px;background:#c75;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:16px;font-weight:bold;">Save time</button>'
+    )
+    patterns = (
+        r'(<div id="ctrl"[^>]*>)\s*(<button id="btnPlay")',
+        r'(<div id="ctrl"[^>]*>)\s*(<button type="button" id="btnPlay")',
+        r'(<div id="ctrl"[^>]*>)\s*(<button type="button"\s+id="btnPlay")',
+        r'(<div id="ctrl"[^>]*>)\s*(<button[^>]*\bid="btnPlay"\b[^>]*>)',
+    )
+    for pat in patterns:
+        new_h, n = re.subn(pat, r"\1" + block + r"\2", html, count=1)
+        if n and _TOOLBAR_STATIC_MARK in new_h:
+            return new_h
+    # Last resort: insert immediately before the first <button id="btnPlay" …> inside #ctrl
+    m = re.search(r'<div\s+id="ctrl"[^>]*>', html)
+    if not m:
+        return html
+    start = m.end()
+    idx = html.find('<button id="btnPlay"', start)
+    if idx < 0:
+        return html
+    if _TOOLBAR_STATIC_MARK in html[start:idx]:
+        return html
+    return html[:idx] + block + html[idx:]
+
+
+def _video_src_cache_bust_param(video_path: str | None) -> str:
+    """Unique query segment so <video src="/video?..."> never hits a stale browser cache of another file."""
+    try:
+        vp = os.path.normcase(os.path.abspath(video_path or ""))
+    except OSError:
+        vp = str(video_path or "")
+    return hashlib.sha256(
+        (vp + "|" + str(time.time_ns())).encode("utf-8", errors="ignore")
+    ).hexdigest()[:22]
+
+
+def _patch_html_playback_speed(
+    html_path, default_speed=0.5, video_path: str | None = None, stream_token: str | None = None
+):
     """Patch generated calibration HTML:
     1. Default playback speed
     2. Speed toggle buttons
@@ -176,14 +259,35 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
 
-    # Point <video> at server /video (same pipe as POST /load_video + HTTP Range seeks).
-    # Relative src only matches when the mp4 sits under serve_dir; wrong/moved annotate.html ⇒ video ≠ waveform audio.
+    # Session-only视频 URL：/v/<token>，路径每次换视频都变，浏览器无法把 ken0102 的缓存当成别的文件。
+    _src = rf"/v/{stream_token}" if stream_token else rf"/video?c={_video_src_cache_bust_param(video_path)}"
     html, _n_vid = re.subn(
-        r'(<video id="vid" src=")([^"]*)(")',
-        r'\1/video"',
+        r'(<video\s+id="vid"\s+src=")([^"]*)(")',
+        r"\1" + _src + r'"',
         html,
         count=1,
     )
+    if not _n_vid:
+        html, _n_vid = re.subn(
+            r'(<video\b[^>]*\bid\s*=\s*"vid"[^>]*\ssrc=")([^"]*)(")',
+            r"\1" + _src + r"\3",
+            html,
+            count=1,
+        )
+    if not _n_vid:
+        html, _n_vid = re.subn(
+            r'(<video\b[^>]*\ssrc=")([^"]*)("[^>]*\bid\s*=\s*"vid"[^>]*)',
+            r"\1" + _src + r"\3",
+            html,
+            count=1,
+        )
+    if not _n_vid:
+        print(
+            "Warning: could not set <video id=vid> src to /v/<token>; "
+            "browser may load a relative .mp4 from serve_dir (wrong clip). "
+            f"file={html_path}",
+            flush=True,
+        )
 
     # ── 0. Hide top hint bar ─────────────────────────────────────────
     html = html.replace(
@@ -210,8 +314,14 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
 
     # ── 2. Speed buttons ─────────────────────────────────────────────
     old_ctrl = '<div id="ctrl"><button id="btnPlay" type="button">Play</button>'
+    # Time / Save time / Stage are in the static HTML so they appear even if later script errors.
     new_ctrl = (
         '<div id="ctrl" style="font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+        '<span id="stageTimeDisplay" style="color:#ccc;font-size:13px;font-weight:bold;min-width:3em;margin-right:6px;"></span>'
+        '<button type="button" id="btnAnnotateTime" title="Last shot − earliest beep (stage time)" '
+        'style="padding:6px 14px;background:#446;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:16px;">Time</button>'
+        '<button type="button" id="btnAnnotateSave" '
+        'style="padding:6px 18px;background:#c75;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:16px;font-weight:bold;">Save time</button>'
         '<button id="btnPlay" type="button" style="padding:6px 18px;font-size:16px;">Play</button>'
         '<button id="spd025" onclick="_setSpeed(0.25)" style="padding:6px 14px;font-size:16px;">0.25x</button>'
         f'<button id="spd050" onclick="_setSpeed(0.5)" style="padding:6px 14px;font-size:16px;font-weight:bold;outline:2px solid #2a7;">0.5x</button>'
@@ -221,14 +331,25 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
         '<span id="loadStatus" style="color:#555;font-size:14px;"></span>'
     )
     html = html.replace(old_ctrl, new_ctrl, 1)
+    html = _inject_static_toolbar_html(html)
+    if _TOOLBAR_STATIC_MARK not in html:
+        print(
+            f"Warning: could not inject annotate toolbar (Time / Save time) into HTML; "
+            f"check #ctrl markup: {html_path}",
+            flush=True,
+        )
 
     # ── 3. Toast style (no JS yet — Save All button added after cloneNode in patch 5) ──
     html = html.replace(
         "</head>",
-        """<style>
+        """<meta http-equiv="Cache-Control" content="no-store, must-revalidate" />
+<style>
 #saveToast{position:fixed;top:18px;right:18px;padding:12px 22px;border-radius:8px;
   font-size:14px;font-weight:bold;color:#fff;z-index:9999;display:none;
   box-shadow:0 3px 12px rgba(0,0,0,0.25);}
+/* Whole toolbar uses full width so Time / Save time on the left are not clipped when #videoBox centers a wide row. */
+#videoBox{overflow:visible!important;}
+#ctrl{position:relative;z-index:6;align-self:stretch;width:100%;max-width:100%;box-sizing:border-box;justify-content:flex-start;padding:4px 8px;overflow-x:auto;flex-wrap:wrap;}
 </style>
 <div id="saveToast"></div>
 </head>""",
@@ -262,8 +383,16 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
         '\n        D=d; t0=0; t1=D.duration;'
         '\n        calibrationShots=(D.calibration_shots||[]).slice();'
         '\n        calibrationBeepTimes=(D.beep_times||[]).slice();'
-        '\n        if(vid){vid.src="/video?"+Date.now();vid.load();'
-        f'\n          vid.playbackRate={_spd};playheadT=0;'
+        '\n        var v=document.getElementById("vid");'
+        '\n        if(resp.stream_token && v){'
+        '\n          v.pause();'
+        '\n          try{v.removeAttribute("src");v.load();}catch(_e0){}'
+        '\n          v.src="/v/"+resp.stream_token+"?bust="+Date.now();'
+        '\n          try{v.load();}catch(_e1){}'
+        f'\n          v.playbackRate={_spd};playheadT=0;'
+        '\n          if(typeof vid!=="undefined"){ try{ vid=v; }catch(_v){} }'
+        '\n        }else if(v){'
+        '\n          st.textContent="Error: server did not send stream_token — check console [annotate_html]";'
         '\n        }'
         '\n        draw();'
         '\n        if(window._updateSavePathDisplay) window._updateSavePathDisplay();'
@@ -281,6 +410,23 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     patch_js = """
 <script>
 (function(){
+  // If <video> still uses a bare filename (e.g. clip.mp4), the browser requests /clip.mp4 from serve_dir
+  // (startup folder) — wrong clip. Force the session stream.
+  var _vfix=document.getElementById('vid');
+  if(_vfix){
+    try{
+      var _raw=_vfix.getAttribute('src')||'';
+      var _pp=_raw;
+      try{ if(/^https?:\\/\\//.test(_raw)||_raw.indexOf('//')===0){ _pp=new URL(_raw,location.href).pathname; } }catch(_e){}
+      var sessOk=(_pp.indexOf('/v/')===0||_pp.indexOf('/video')===0);
+      if(!sessOk){
+        // Never assign /video here — same-path media cache can replay the first opened clip (ken0102).
+        try{
+          location.replace(location.pathname.split('?')[0]+'?rb='+Date.now());
+        }catch(_e2){ _vfix.src='/video?enforce='+Date.now().toString(36)+Math.random().toString(36).slice(2,10); _vfix.load(); }
+      }
+    }catch(_e){}
+  }
   // ---- Speed control ----
   window._setSpeed = function(s){
     if(vid){ vid.playbackRate=s; }
@@ -371,7 +517,9 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
   // ---- mousedown ----
   wrap.addEventListener('mousedown', function(e){
     if(e.button!==0) return;
-    // Ignore clicks that originate inside the toolbar (buttons, etc.)
+    // Ignore clicks that originate inside toolbars (video #ctrl or waveform toolbar)
+    var vc=document.getElementById('ctrl');
+    if(vc && vc.contains(e.target)) return;
     var tb=document.getElementById('waveformToolbar');
     if(tb && tb.contains(e.target)) return;
     _startX=e.clientX; _moved=false;
@@ -469,7 +617,7 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     var t=xToT(rx); if(t!==null){ calibrationShots.push(t); calibrationShots.sort(function(a,b){return a-b;}); draw(); }
   });
 
-  // ---- Save All button (created after cloneNode so it keeps its listener) ----
+  // ---- Save / Time (buttons are in patched HTML #ctrl; wire handlers here) ----
   (function(){
     function showToast(msg, ok){
       var t=document.getElementById('saveToast');
@@ -517,27 +665,45 @@ def _patch_html_playback_speed(html_path, default_speed=0.5):
     if(bs) bs.style.display='none';
     if(bb) bb.style.display='none';
 
-    // Create Save All button and insert before Play button in #ctrl
-    var btnAll=document.createElement('button');
-    btnAll.type='button';
-    btnAll.textContent='Save All';
-    btnAll.style.cssText='padding:6px 18px;background:#c75;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:16px;font-weight:bold;';
-    btnAll.addEventListener('mousedown',function(e){e.stopPropagation();});
-    btnAll.addEventListener('mouseup',  function(e){e.stopPropagation();});
-    btnAll.addEventListener('click',function(e){
-      e.preventDefault(); e.stopPropagation();
-      var msg='Save annotations?\\n'+
-        (D.calibration_save_path?'  shots -> '+D.calibration_save_path+'\\n':'')+
-        (D.calibration_beep_path?'  beep  -> '+D.calibration_beep_path:'');
-      if(!confirm(msg)) return;
-      doSave();
-    });
-    var ctrl=document.getElementById('ctrl');
-    var playBtn=document.getElementById('btnPlay');
-    if(ctrl && playBtn){
-      ctrl.insertBefore(btnAll, playBtn);
-    } else if(ctrl){
-      ctrl.insertBefore(btnAll, ctrl.firstChild);
+    // Stage / Time / Save time: elements are already in patched #ctrl HTML; only wire handlers here.
+    function computeStageSeconds(){
+      var shots=(typeof calibrationShots!=='undefined'?calibrationShots:[]).slice().sort(function(a,b){return a-b;});
+      var beeps=(typeof calibrationBeepTimes!=='undefined'?calibrationBeepTimes:[]).slice().sort(function(a,b){return a-b;});
+      if(!shots.length || !beeps.length) return null;
+      return shots[shots.length-1] - beeps[0];
+    }
+    window._refreshStageTimeDisplay=function(){
+      var el=document.getElementById('stageTimeDisplay');
+      if(!el) return;
+      var s=computeStageSeconds();
+      if(s===null){
+        el.textContent='Stage: —';
+        return;
+      }
+      el.textContent='Stage: '+s.toFixed(3)+' s';
+    };
+
+    var btnTime=document.getElementById('btnAnnotateTime');
+    if(btnTime){
+      btnTime.addEventListener('mousedown',function(e){e.stopPropagation();});
+      btnTime.addEventListener('mouseup',  function(e){e.stopPropagation();});
+      btnTime.addEventListener('click',function(e){
+        e.preventDefault(); e.stopPropagation();
+        window._refreshStageTimeDisplay();
+      });
+    }
+    var btnAll=document.getElementById('btnAnnotateSave');
+    if(btnAll){
+      btnAll.addEventListener('mousedown',function(e){e.stopPropagation();});
+      btnAll.addEventListener('mouseup',  function(e){e.stopPropagation();});
+      btnAll.addEventListener('click',function(e){
+        e.preventDefault(); e.stopPropagation();
+        var msg='Save annotations?\\n'+
+          (D.calibration_save_path?'  shots -> '+D.calibration_save_path+'\\n':'')+
+          (D.calibration_beep_path?'  beep  -> '+D.calibration_beep_path:'');
+        if(!confirm(msg)) return;
+        doSave();
+      });
     }
 
     // Show current save paths (call this after D is updated too)
@@ -706,16 +872,52 @@ def _prepare_video(
     cal_data["calibration_save_path"] = cali_path
     cal_data["calibration_beep_path"] = beep_path
     cal_data["annotation_video_path"] = video
+    print(
+        "[_prepare_video] embedding cal_data: "
+        f"annotation_video_path={video!r} | D.duration={cal_data.get('duration')!r} | len(t)={len(cal_data.get('t') or [])}",
+        flush=True,
+    )
     return cal_data, video_dir, video_base, anno_dir
 
 
-def _materialize_annotation_html(cal_data, video_path, default_speed=0.5):
+def _materialize_annotation_html(cal_data, video_path, default_speed=0.5, stream_token: str | None = None):
     """Build full annotate viewer HTML for current cal_data + video (avoid stale disk HTML on refresh)."""
+    if not stream_token:
+        raise ValueError("stream_token required (use /v/<token> URL so the browser cannot reuse a cached clip)")
+    v_cal = cal_data.get("annotation_video_path")
+    v_arg = os.path.abspath(os.path.normpath(video_path)) if video_path else None
+    dur = cal_data.get("duration")
+    n_t = len(cal_data.get("t") or [])
+    match = (
+        os.path.normcase(v_cal or "") == os.path.normcase(v_arg or "")
+        if (v_cal and v_arg)
+        else None
+    )
+    print(
+        "[materialize_annotation_html] "
+        f"waveform D: duration={dur!r} len(t)={n_t} | "
+        f"D.annotation_video_path={v_cal!r} | "
+        f"patch video_path arg={v_arg!r} | "
+        f"paths_consistent={match} | "
+        f"stream_token[..8]={stream_token[:8]}...",
+        flush=True,
+    )
+    if v_cal and v_arg and match is False:
+        print(
+            "[materialize_annotation_html] WARNING: embedded cal_data does not match video_path argument — "
+            "HTML waveform D may be for a different file than <video> after patch.",
+            flush=True,
+        )
     fd, tmp_path = tempfile.mkstemp(suffix=".html")
     os.close(fd)
     try:
         write_calibration_viewer_html(tmp_path, cal_data, video_path=video_path)
-        _patch_html_playback_speed(tmp_path, default_speed=default_speed)
+        _patch_html_playback_speed(
+            tmp_path,
+            default_speed=default_speed,
+            video_path=video_path,
+            stream_token=stream_token,
+        )
         with open(tmp_path, encoding="utf-8") as f:
             return f.read()
     finally:
@@ -728,15 +930,19 @@ def _materialize_annotation_html(cal_data, video_path, default_speed=0.5):
 def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                           initial_video_path=None, initial_save_dir=None,
                           initial_cal_data=None,
+                          initial_annotate_html: str | None = None,
+                          initial_stream_token: str | None = None,
+                          picker_root: str | None = None,
                           default_speed=0.5, session_shot_backend="auto",
                           annotate_loose_min_conf=False, annotate_shot_nms_sec=0.12):
     """HTTP server for the annotation tool.
 
     Endpoints:
       GET  /<file>          — serve static files with Range support
-      GET  /video           — serve the currently loaded video with Range support
+      GET  /v/<token>       — serve the current session video (path-only URL avoids browser media cache mixups)
+      GET  /video           — legacy stream for the currently loaded video with Range support
       POST /save_calibration — write annotation files
-      POST /load_video      — process a new video and return updated waveform JSON
+      POST /load_video      — process a new video and return updated waveform JSON + stream_token
     """
     serve_dir  = os.path.abspath(serve_dir)
 
@@ -747,6 +953,9 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
         "session_shot_backend": session_shot_backend,
         "cal_data":   initial_cal_data,
         "annotate_html_bytes": None,
+        "video_stream_token": None,
+        # Pinned folder for Tk pickers (--picker-dir / SHOTMASK_PICKER_DIR).
+        "picker_root": picker_root if (isinstance(picker_root, str) and os.path.isdir(picker_root)) else None,
         "annotate_loose_min_conf": annotate_loose_min_conf,
         "annotate_shot_nms_sec": float(annotate_shot_nms_sec),
     }
@@ -757,18 +966,92 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
         vp = state.get("video_path")
         if not cal or not vp or not isinstance(vp, str) or not os.path.isfile(vp):
             state["annotate_html_bytes"] = None
+            state["video_stream_token"] = None
             return
+        print(
+            "\n--- annotate_html REBUILD --------------------------------------------------",
+            flush=True,
+        )
+        print(
+            "[annotate_html REBUILD] GET /v/<token> streams FILE:",
+            vp,
+            flush=True,
+        )
+        print(
+            "[annotate_html REBUILD] embedded D.annotation_video_path (must match file used for waveform):",
+            cal.get("annotation_video_path"),
+            flush=True,
+        )
+        print(
+            "[annotate_html REBUILD] D.duration, len(D.t):",
+            repr(cal.get("duration")),
+            len(cal.get("t") or []),
+            flush=True,
+        )
+        # Token must survive HTML materialize failures: client needs GET /v/<token> ↔ state["video_path"].
+        # If we clear the token, Open Video falls back to /video — some browsers still key media cache on
+        # /video and replay the first clip (e.g. ken0102) even when the server sends a different file.
+        state["video_stream_token"] = secrets.token_hex(16)
         try:
-            html = _materialize_annotation_html(cal, vp, default_speed=default_speed)
+            html = _materialize_annotation_html(
+                cal,
+                vp,
+                default_speed=default_speed,
+                stream_token=state["video_stream_token"],
+            )
             state["annotate_html_bytes"] = html.encode("utf-8")
         except Exception as e:
             print(f"[annotate_html] Rebuild failed: {e}")
             state["annotate_html_bytes"] = None
 
-    _rebuild_annotate_html_cache()
+    if (
+        initial_annotate_html is not None
+        and initial_stream_token
+        and isinstance(initial_stream_token, str)
+    ):
+        state["annotate_html_bytes"] = initial_annotate_html.encode("utf-8")
+        state["video_stream_token"] = initial_stream_token
+        print(
+            "\n--- annotate_html initial (from main, no rebuild) --------------------------------",
+            flush=True,
+        )
+        print(
+            "[annotate_html] serving RAM page built in main(); stream token (prefix):",
+            initial_stream_token[:16] + "...",
+            flush=True,
+        )
+        print(
+            "[annotate_html] session video (GET /v/… serves this):",
+            initial_video_path,
+            flush=True,
+        )
+        if initial_cal_data:
+            print(
+                "[annotate_html] D.annotation_video_path:",
+                initial_cal_data.get("annotation_video_path"),
+                flush=True,
+            )
+            print(
+                "[annotate_html] D.duration, len(D.t):",
+                repr(initial_cal_data.get("duration")),
+                len(initial_cal_data.get("t") or []),
+                flush=True,
+            )
+    else:
+        _rebuild_annotate_html_cache()
 
     def _norm(p):
         return os.path.normcase(os.path.normpath(p))
+
+    def _is_client_disconnect(err):
+        """Browser closed tab / cancelled download — do not reply with HTTP 500 (socket already dead)."""
+        if isinstance(err, (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)):
+            return True
+        if isinstance(err, OSError):
+            winerr = getattr(err, "winerror", None)
+            if winerr in (10053, 10054):  # Windows: aborted / reset by peer
+                return True
+        return False
 
     def _serve_file(handler, file_path, cache_control=None):
         """Send file with HTTP Range support (needed for HTML5 video seeking)."""
@@ -812,8 +1095,13 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                     handler.send_header("Cache-Control", cache_control)
                 handler.end_headers()
                 handler.wfile.write(data)
-        except Exception:
-            handler.send_error(500)
+        except Exception as e:
+            if _is_client_disconnect(e):
+                return
+            try:
+                handler.send_error(500)
+            except Exception:
+                pass
 
     class AnnotationHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -822,7 +1110,11 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
             # Special: open native file picker and return chosen path as JSON
             if path == "/open_file_dialog":
                 def _pick_initialdir():
-                    # Without initialdir, Windows remembers an unrelated folder (e.g. last parpar browse).
+                    pr = state.get("picker_root")
+                    if isinstance(pr, str) and os.path.isdir(pr):
+                        return os.path.normpath(pr)
+                    # Without initialdir, Windows often reuses the last browse path for python.exe/py.exe
+                    # (feels like "it remembers my last Open Video folder" across runs).
                     v = state.get("video_path")
                     if isinstance(v, str):
                         vd = os.path.dirname(os.path.abspath(v))
@@ -837,13 +1129,14 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                     root = tk.Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
+                    _tk_sync_before_dialog(root)
                     chosen = filedialog.askopenfilename(
                         title="Select video file",
                         filetypes=[
                             ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm"),
                             ("All files", "*.*"),
                         ],
-                        initialdir=_pick_initialdir(),
+                        initialdir=os.path.normpath(_pick_initialdir()),
                     )
                     root.destroy()
                     return chosen
@@ -854,6 +1147,27 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                 self.send_header("Content-Length", len(data))
                 self.end_headers()
                 self.wfile.write(data)
+                return
+
+            # Session video stream: unique path per clip so the browser does not reuse another file's cached bytes.
+            if path.startswith("/v/"):
+                tok = path[len("/v/") :].split("/")[0]
+                if not tok or ".." in tok:
+                    self.send_error(400)
+                    return
+                if tok != state.get("video_stream_token"):
+                    self.send_error(404)
+                    return
+                vp = state.get("video_path")
+                if vp and os.path.isfile(vp):
+                    print(f"[GET /v/…] token ok -> {vp}", flush=True)
+                    _serve_file(
+                        self,
+                        vp,
+                        cache_control="no-store, max-age=0, must-revalidate",
+                    )
+                else:
+                    self.send_error(404)
                 return
 
             # Special: serve the currently loaded video
@@ -877,9 +1191,27 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                 self.send_error(403)
                 return
 
+            # Do not serve raw .mp4 from serve_dir: relative <video src="file.mp4"> would pull the wrong file
+            # (startup directory) instead of session state["video_path"] served at /video.
+            if path.lower().endswith(".mp4"):
+                msg = (
+                    "Direct .mp4 URLs are disabled for this annotate server. "
+                    "The <video> element must use src starting with /v/<token> (session) or /video."
+                )
+                b = msg.encode("utf-8")
+                self.send_response(403)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+                return
+
             # Always serve annotate page from RAM so refresh matches current session (/video path + embedded D).
             if path == html_basename:
                 blob = state.get("annotate_html_bytes")
+                if not blob:
+                    _rebuild_annotate_html_cache()
+                    blob = state.get("annotate_html_bytes")
                 if blob:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -888,12 +1220,36 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                     self.end_headers()
                     self.wfile.write(blob)
                     return
+                # Do not fall back to serve_dir/annotate.html: that file is only written at process start
+                # for the *first* video; reading it after Open Video would show the wrong embedded D while
+                # /video still streams the current session file (path mismatch).
+                msg = (
+                    "<!DOCTYPE html><meta charset=utf-8><title>Annotate page unavailable</title>"
+                    "<p>The annotate HTML could not be built for the current video (see server console for "
+                    "<code>[annotate_html] Rebuild failed</code>).</p>"
+                    "<p>Video in session: "
+                    + html.escape(str(state.get("video_path") or "?"))
+                    + "</p>"
+                )
+                body = msg.encode("utf-8")
+                self.send_response(503)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
 
             file_path = os.path.abspath(os.path.join(serve_dir, path))
             if not _norm(file_path).startswith(_norm(serve_dir)) or not os.path.isfile(file_path):
                 self.send_error(404)
                 return
-            _serve_file(self, file_path)
+            # Annotate page may fall back to disk when cache rebuild failed; never use a stale cached copy.
+            cc = (
+                "no-store, max-age=0, must-revalidate"
+                if path == html_basename
+                else None
+            )
+            _serve_file(self, file_path, cache_control=cc)
 
         def do_POST(self):
             length = int(self.headers.get("Content-Length", 0))
@@ -947,9 +1303,22 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                     state["save_dir"]   = anno_dir  # save to annotation dir, not tmp/
                     state["cal_data"]   = cal_data
                     _rebuild_annotate_html_cache()
+                    print(
+                        "[load_video] response stream_token prefix:",
+                        (state.get("video_stream_token") or "")[:16] + "..."
+                        if state.get("video_stream_token")
+                        else "(none — F5 page may 503)",
+                        flush=True,
+                    )
                     print(f"[load_video] Sending response for {video_base} ...")
                     try:
-                        payload = json.dumps({"ok": True, "data": cal_data}).encode("utf-8")
+                        payload = json.dumps(
+                            {
+                                "ok": True,
+                                "data": cal_data,
+                                "stream_token": state.get("video_stream_token"),
+                            }
+                        ).encode("utf-8")
                     except Exception as je:
                         print(f"[load_video] JSON encode error: {je}")
                         raise
@@ -973,12 +1342,38 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
         def log_message(self, format, *args):
             pass  # suppress request logs
 
-    server = HTTPServer(("127.0.0.1", port), AnnotationHandler)
-    url = f"http://127.0.0.1:{port}/{html_basename}"
-    print(f"Annotation server: {url}  (Ctrl+C to stop)")
+    session_nonce = secrets.token_hex(8)
+    ts = int(time.time())
+    url = f"http://127.0.0.1:{port}/{html_basename}?v={ts}&s={session_nonce}"
+    print(f"Annotation server: {url}")
+    print("  (opens in a NEW browser window; do not reuse an old tab / file:// annotate.html)")
+    print("  (?v&s= reset each launch — stale pages were another annotate server or cached tab)")
     if initial_video_path:
-        print(f"Session video (/video + F5 annotate page): {initial_video_path}")
-    threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
+        print(
+            "Session video (F5 + /v/<token> + Open Video use this file):",
+            initial_video_path,
+        )
+
+    def _open_browser_delayed():
+        time.sleep(0.35)
+        try:
+            webbrowser.open(url, new=1, autoraise=True)
+        except Exception as err:
+            print(f"Could not auto-open browser: {err}")
+
+    threading.Thread(target=_open_browser_delayed, daemon=True).start()
+
+    try:
+        server = HTTPServer(("127.0.0.1", port), AnnotationHandler)
+    except OSError as err:
+        print(
+            "\n*** Cannot listen on http://127.0.0.1:{} — {}\n*** "
+            "Another annotate server (older run) may still hold this port. "
+            "Close its CMD/Python window or rerun start_annotate.bat "
+            "(it tries to kill the port first).\n".format(port, err),
+            flush=True,
+        )
+        raise SystemExit(1) from None
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -990,6 +1385,12 @@ def main():
         description="Manual annotation tool: 0.5x playback, drag lines for shots/beep, save to *cali.txt"
     )
     ap.add_argument("--video", default=None, help="Video file path (.mp4). If omitted, a file picker opens.")
+    ap.add_argument(
+        "--pick",
+        action="store_true",
+        help="Always show the opening file picker, even if --video is set (shortcut/drag-drop). "
+             "Env SHOTMASK_ALWAYS_PICK=1 does the same.",
+    )
     ap.add_argument("--speed", type=float, default=0.5,
                     help="Default playback speed (default 0.5)")
     ap.add_argument("--port", type=int, default=8765,
@@ -1007,6 +1408,12 @@ def main():
     ap.add_argument("--out-dir", default=None,
                     help="HTML output directory (default: same as video)")
     ap.add_argument(
+        "--picker-dir",
+        default=None,
+        metavar="DIR",
+        help="Pin file dialogs (startup + Open Video) to this folder. Env SHOTMASK_PICKER_DIR if unset; CLI overrides env.",
+    )
+    ap.add_argument(
         "--annotate-loose",
         action="store_true",
         help="Gunshot hints: skip calibrated confidence threshold → many extras (legacy; use rarely).",
@@ -1020,6 +1427,19 @@ def main():
     )
     args = ap.parse_args()
 
+    if args.pick or os.environ.get("SHOTMASK_ALWAYS_PICK", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        args.video = None
+
+    picker_root = _resolve_picker_root(args.picker_dir)
+    if picker_root:
+        print(f"File dialogs pinned to: {picker_root}", flush=True)
+
+    print(f"Using annotate_shots.py: {os.path.abspath(__file__)}", flush=True)
+
     ffmpeg = get_ffmpeg_cmd()
     if not ffmpeg:
         print("Error: ffmpeg not found.")
@@ -1030,14 +1450,17 @@ def main():
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        _here = os.path.dirname(os.path.abspath(__file__))
+        _start = picker_root or (
+            _ANNOTATE_SHOTS_DIR if os.path.isdir(_ANNOTATE_SHOTS_DIR) else os.getcwd()
+        )
+        _tk_sync_before_dialog(root)
         chosen = filedialog.askopenfilename(
             title="Select video file to annotate",
             filetypes=[
                 ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm"),
                 ("All files", "*.*"),
             ],
-            initialdir=_here if os.path.isdir(_here) else os.getcwd(),
+            initialdir=os.path.normpath(_start),
         )
         root.destroy()
         if not chosen:
@@ -1068,10 +1491,16 @@ def main():
     html_name = "annotate.html"
     html_path = os.path.join(out_dir, html_name)
 
-    # Write HTML with video src pointing to /video (served dynamically)
-    write_calibration_viewer_html(html_path, cal_data, video_path=video)
-
-    _patch_html_playback_speed(html_path, default_speed=args.speed)
+    # Write HTML with <video src="/v/<token>"> so each clip has a unique URL (no stale ken0102 cache).
+    stream_token = secrets.token_hex(16)
+    html_page = _materialize_annotation_html(
+        cal_data, video, default_speed=args.speed, stream_token=stream_token
+    )
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html_page)
+    # annotate.html lives next to this mp4 unless --out-dir (not a separate saved folder)
+    print("\nVideo file (this path decides the output folder):", flush=True)
+    print(f"  {video}", flush=True)
     print(f"\nHTML ready: {html_path}")
     print(f"Default playback speed: {args.speed}x")
 
@@ -1085,10 +1514,13 @@ def main():
         initial_video_path=video,
         initial_save_dir=anno_dir,
         initial_cal_data=cal_data,
+        initial_annotate_html=html_page,
+        initial_stream_token=stream_token,
         default_speed=args.speed,
         session_shot_backend=args.shot_backend,
         annotate_loose_min_conf=args.annotate_loose,
         annotate_shot_nms_sec=args.shot_nms,
+        picker_root=picker_root,
     )
     return 0
 

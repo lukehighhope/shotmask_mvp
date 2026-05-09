@@ -1,15 +1,26 @@
 {
+  "evaluation": {
+    "script": "evaluate_multivideo.py",
+    "match_tolerance_sec": 0.04,
+    "match_tolerance_ms": 40,
+    "description": "GT ref time vs detected shot: nearest hit within this second distance counts as TP (symmetric). CLI: --tol; default TOL in script."
+  },
   "cnn_gunshot": {
     "checkpoint": "C:\\Users\\Cao\\Downloads\\shotmask_mvp\\outputs\\cnn_gunshot.pt",
     "arch": "default",
-    "epochs_requested": 50,
-    "end_epoch_counter": 50,
-    "train_samples": 11056,
-    "train_pos": 1153,
-    "train_neg": 9903,
-    "best_training_loss": 0.1891698631743303,
-    "best_training_loss_epoch": 50,
+    "epochs_requested": 25,
+    "start_epoch_before": 50,
+    "end_epoch_counter": 75,
+    "resume": true,
+    "augment": true,
+    "batch": 32,
+    "lr": 0.001,
+    "train_samples": 16239,
+    "train_pos": 1753,
+    "train_neg": 14486,
+    "best_training_loss": 0.2198238842588974,
+    "best_training_loss_epoch": 75,
     "split": "dataset_split.json train paths (--use-split)"
   },
-  "updated_utc": "2026-05-08T02:55:35Z"
+  "updated_utc": "2026-05-09T12:40:32Z"
 }

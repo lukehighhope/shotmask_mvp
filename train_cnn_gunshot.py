@@ -40,6 +40,7 @@ WINDOW_AFTER = 0.08
 
 
 def _merge_training_results(key, payload):
+    """Update outputs/training_results_latest.json and append one line to training_history.jsonl."""
     path = os.path.join("outputs", "training_results_latest.json")
     os.makedirs("outputs", exist_ok=True)
     data = {}
@@ -50,10 +51,21 @@ def _merge_training_results(key, payload):
         except Exception:
             pass
     from datetime import datetime, timezone
+
+    utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     data[key] = payload
-    data["updated_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    data["updated_utc"] = utc
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
+    hist = os.path.join("outputs", "training_history.jsonl")
+    record = {"recorded_utc": utc, "job": key, **payload}
+    try:
+        with open(hist, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        print(f"Recorded run -> {hist}", flush=True)
+    except OSError as e:
+        print(f"Warning: could not append training history: {e}", flush=True)
 
 
 def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
@@ -277,7 +289,12 @@ def main():
         "checkpoint": os.path.abspath(args.out),
         "arch": arch,
         "epochs_requested": args.epochs,
+        "start_epoch_before": int(start_epoch),
         "end_epoch_counter": int(start_epoch + args.epochs),
+        "resume": bool(args.resume and ckpt is not None),
+        "augment": bool(args.augment),
+        "batch": int(args.batch),
+        "lr": float(args.lr),
         "train_samples": int(len(X)),
         "train_pos": int(n_pos),
         "train_neg": int(n_neg),

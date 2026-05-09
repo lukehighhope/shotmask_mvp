@@ -93,7 +93,7 @@ def main():
     ap = argparse.ArgumentParser(description="Evaluate gunshot detection (LogReg+CNN or CNN-only)")
     ap.add_argument("--folder", default="01032026")
     ap.add_argument("--video", default=None, metavar="NAME", help="Evaluate only this video (e.g. S7-main.mp4); must be in --folder")
-    ap.add_argument("--use-split", action="store_true", help="Evaluate on validation set (last video per folder from dataset_split)")
+    ap.add_argument("--use-split", action="store_true", help="Evaluate on validation set from traning data/dataset_split.json (explicit \"val\" list or legacy last mp4 per folder)")
     ap.add_argument("--cnn-only", action="store_true", help="Use CNN only for scoring (no LogReg)")
     ap.add_argument("--threshold", type=float, default=None, help="Post-filter: keep only shots with confidence >= this (for threshold sweep)")
     ap.add_argument("--nms", type=float, default=NMS_TIME_WINDOW, help=f"NMS time window in seconds (0=disable). Default {NMS_TIME_WINDOW}")

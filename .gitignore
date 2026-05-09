@@ -31,6 +31,10 @@ tmp/
 # Output files (optional - uncomment if you don't want to track outputs)
 # outputs/
 
+# Train cache / scratch (often >100 MB; GitHub blocks large blobs)
+outputs/cache_*.npz
+outputs/shell_test_*.npz
+
 # IDE
 .vscode/
 .idea/
