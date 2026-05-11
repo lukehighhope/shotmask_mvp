@@ -19,8 +19,9 @@ cd path\to\shotmask_mvp
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
-# If you need a specific CUDA build, install PyTorch per https://pytorch.org/ then reinstall other deps as needed.
 ```
+
+Versions are pinned in `requirements.txt`. For **CUDA** PyTorch, follow the comment at the top of that file (official `download.pytorch.org` wheel index) or https://pytorch.org/.
 
 **Windows & Unicode paths** (Chinese folder names, etc.): prefer UTF-8 in the terminal when training/logging:
 
@@ -116,6 +117,31 @@ After training, run **`evaluate_multivideo`** (and optionally **`--record-jsonl`
 - **`annotate_shots.py`** — in-browser waveform + markers; env **`SHOTMASK_PICKER_DIR`**, **`SHOTMASK_TRAINING_DATA_ROOT`**.  
 - **`extract_audio_plot.py --calibration`** — Calibration Viewer (HTTP server; supports video **Range** requests for seeking).  
 - **`start_annotate.bat`** — example launcher (edit data paths inside).
+
+---
+
+## Tests and CI
+
+Automated checks use **pytest**:
+
+```powershell
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q
+```
+
+- Unit tests (`tests/test_evaluate_core.py`, `tests/test_dataset_split_and_paths.py`) need no FFmpeg/GPU.
+- **Golden regression** (`tests/test_golden_gunshot.py`): a short PD gunshot-derived clip (**`golden_gunshot.wav`**) runs **`detect_shots`** with **`outputs/cnn_gunshot.pt`** and the calibrated **confidence gate**, matching **five** onset times ±50 ms (**`golden_gunshot_expected.json`**; snapshot from **CPU** via `scripts/refresh_golden_expected.py` because CI runs CPU-only Torch). Attribution: **`tests/fixtures/GOLDEN_AUDIO_ATTRIBUTION.txt`**.
+- Rebuild WAV from Commons + refresh expected JSON:
+
+  ```powershell
+  pip install -r requirements-dev.txt
+  python scripts/build_real_golden_wav.py
+  python scripts/refresh_golden_expected.py
+  ```
+
+- **ffmpeg** (`test_golden_mp4_*`): CI installs apt `ffmpeg`; for local PowerShell installs, use your own FFmpeg or rely on **`imageio-ffmpeg`** bundled by `requirements-dev.txt` (picked up indirectly by the build helper).
+
+On **GitHub**, **`.github/workflows/ci.yml`** runs `ffmpeg` setup (for the mux test), installs dependencies, then `pytest` on **Ubuntu** / Python 3.11 for pushes and pull requests.
 
 ---
 

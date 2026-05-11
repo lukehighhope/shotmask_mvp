@@ -1,0 +1,2 @@
+pytest>=8.0.0,<9
+imageio-ffmpeg>=0.5

@@ -1,0 +1,10 @@
+Golden test audio (golden_gunshot.wav) comes from Wikimedia Commons file:
+  Gunshots 8.ogg
+  Page: https://commons.wikimedia.org/wiki/File:Gunshots_8.ogg
+  Direct: https://upload.wikimedia.org/wikipedia/commons/e/ee/Gunshots_8.ogg
+
+Rights: Released into the public domain by its author (aradlaw / PDSounds).
+Described by Commons as simulated gunshots (Audacity / balloon pops) recorded for LibriVox.
+
+We redistribute a short mono 48 kHz WAV slice (~3.5 s) built with ffmpeg /
+imageio-ffmpeg for pytest regression coverage (see scripts/build_real_golden_wav.py).

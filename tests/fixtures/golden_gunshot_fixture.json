@@ -1,0 +1,12 @@
+{
+  "source": "Gunshots 8.ogg — Wikimedia Commons (public domain). See GOLDEN_AUDIO_ATTRIBUTION.txt",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Gunshots_8.ogg",
+  "download_sha256_ogg": "0107c3a14e256c2a4c2e94f7494df6994edba75f4de05fced2d8900cf19b4c0b",
+  "sr": 48000,
+  "channels_mono": true,
+  "slice_from_sec": 0,
+  "slice_duration_sec": 3.5,
+  "fps_for_tests": 30,
+  "format_version": 2,
+  "_rebuild": "python scripts/build_real_golden_wav.py  then  python scripts/refresh_golden_expected.py"
+}

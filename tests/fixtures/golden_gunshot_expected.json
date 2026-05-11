@@ -1,0 +1,14 @@
+{
+  "_source_attribution_file": "tests/fixtures/GOLDEN_AUDIO_ATTRIBUTION.txt",
+  "_note": "Production gate: calibrated min_confidence_threshold, CNN-only (AST forced off in tests). Locked with CPU Torch (scripts/refresh_golden_expected.py) to match ubuntu-latest CI.",
+  "fps": 30,
+  "expected_shot_times_sec": [
+    0.173,
+    0.6567,
+    1.4694,
+    2.3053,
+    3.1238
+  ],
+  "time_tolerance_sec": 0.05,
+  "min_confidence_floor": 0.64
+}

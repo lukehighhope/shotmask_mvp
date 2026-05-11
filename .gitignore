@@ -62,3 +62,6 @@ tmp/**/*.png
 training data/**/*.mp4
 # Test video data (large, skip when push)
 test data/
+
+# Diagnostics (scripts/probe_golden_trim.py etc.)
+tests/fixtures/_probe*.wav
