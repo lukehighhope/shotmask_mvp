@@ -289,7 +289,7 @@ def _resolve_score_weights(score_weights, scene_config=None):
     return tuple(SCENE_WEIGHTS["default"])
 
 
-def cluster_peaks_by_time(peak_times, cluster_window_sec=0.25):
+def cluster_peaks_by_time(peak_times, cluster_window_sec=0.1):
     """
     Cluster peaks that are close in time (within cluster_window_sec).
     Returns list of clusters, each cluster is list of peak indices.
@@ -385,7 +385,7 @@ def detect_shots(
     if use_improved:
         # Get improved method parameters from calibration
         cal = load_calibrated_params() if use_calibrated else {}
-        cluster_window = cal.get("cluster_window_sec", 0.25)
+        cluster_window = float(cal.get("cluster_window_sec", 0.1))
         use_dynamic_cluster = cal.get("use_dynamic_cluster", False)
         use_multi_scale_threshold = cal.get("use_multi_scale_threshold", False)
         mad_k = cal.get("mad_k", 7.0)  # Increased from 6.0 to reduce false positives
@@ -416,6 +416,8 @@ def detect_shots(
         use_cnn_only_flag = use_cnn_only if use_cnn_only is not None else bool(cal.get("use_cnn_only", False))
         use_ast_gunshot_flag = use_ast_gunshot if use_ast_gunshot is not None else bool(cal.get("use_ast_gunshot", bool(cal.get("ast_gunshot_path") and not cal.get("cnn_gunshot_path"))))
 
+        hard_dedup_gap_sec = float(cal.get("hard_dedup_gap_sec", 0.1))
+
         _marker_align = str(cal.get("shot_marker_alignment", "onset")).strip().lower()
         if _marker_align not in ("onset", "envelope_peak", "none"):
             _marker_align = "onset"
@@ -445,6 +447,7 @@ def detect_shots(
             use_cnn_only=use_cnn_only_flag,
             marker_time_alignment=_marker_align,
             marker_refine_window_sec=float(cal.get("marker_refine_window_sec", 0.06)),
+            hard_dedup_gap_sec=hard_dedup_gap_sec,
         )
     
     # Legacy method (original implementation)
@@ -592,7 +595,7 @@ def compute_feature_at_time(context, t, window_before=0.025, window_after=0.040)
 def detect_shots_improved(
     data, sr, fps,
     threshold_percentile=None,
-    cluster_window_sec=0.25,
+    cluster_window_sec=0.1,
     use_dynamic_cluster=False,
     use_multi_scale_threshold=False,
     export_diagnostics=False,
@@ -615,6 +618,7 @@ def detect_shots_improved(
     use_cnn_only=False,
     marker_time_alignment="onset",
     marker_refine_window_sec=0.06,
+    hard_dedup_gap_sec=0.1,
 ):
     """
     Improved two-stage gunshot detection with multi-feature fusion.
@@ -634,11 +638,13 @@ def detect_shots_improved(
         return_candidates: If True, return (shots, candidate_features).
         marker_time_alignment: "onset" (early, perceptual rise), "envelope_peak" (max |envelope| in window), or "none".
         marker_refine_window_sec: ±half-width (s) for refinement window (default 0.06).
+        hard_dedup_gap_sec: Merge final shots closer than this (s); keep highest confidence (echo/dup control).
     """
     align = (marker_time_alignment or "onset").strip().lower()
     if align not in ("onset", "envelope_peak", "none"):
         align = "onset"
     win_ref = max(0.01, float(marker_refine_window_sec))
+    hard_gap = max(0.0, float(hard_dedup_gap_sec))
 
     # STFT parameters; n_frames is the single source of truth for frame axis
     hop_length = 256  # ~5.3ms at 48kHz
@@ -1084,13 +1090,13 @@ def detect_shots_improved(
             s["frame"] = round(s["t"] * fps)
         shots.sort(key=lambda x: x["t"])
 
-    # Hard dedup: shots < 120ms apart → keep max confidence
+    # Hard dedup: shots closer than hard_gap → keep max confidence
     n_before_hard = len(shots)
-    if len(shots) > 1:
+    if len(shots) > 1 and hard_gap > 0:
         shots.sort(key=lambda x: x["t"])
         merged = [shots[0]]
         for s in shots[1:]:
-            if s["t"] - merged[-1]["t"] < 0.12:
+            if s["t"] - merged[-1]["t"] < hard_gap:
                 if s["confidence"] > merged[-1]["confidence"]:
                     merged[-1] = s
             else:
@@ -1098,7 +1104,7 @@ def detect_shots_improved(
         shots = merged
     diag["hard_dedup_dropped"] = n_before_hard - len(shots)
 
-    # Soft dedup: 120–250ms apart and similar flatness → keep max confidence (disable to verify FN source)
+    # Soft dedup: [hard_gap, 250ms] apart and similar flatness → keep max confidence (disable to verify FN source)
     enable_soft_dedup = False
     n_before_soft = len(shots)
     if enable_soft_dedup and len(shots) > 1:
@@ -1106,7 +1112,7 @@ def detect_shots_improved(
         for s in shots[1:]:
             dt = s["t"] - merged[-1]["t"]
             flat_diff = abs(s.get("flatness", 0) - merged[-1].get("flatness", 0))
-            if 0.12 <= dt <= 0.25 and flat_diff < 0.2:
+            if hard_gap <= dt <= 0.25 and flat_diff < 0.2:
                 if s["confidence"] > merged[-1]["confidence"]:
                     merged[-1] = s
             else:

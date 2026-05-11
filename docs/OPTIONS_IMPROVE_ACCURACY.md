@@ -30,6 +30,20 @@
 
 ---
 
+### 2b. 【记录】连发合并窗：当前仓库固定为 **0.1 s**
+
+以下三项为「多近算作同一枪」的登记值（_double tap / 回声_ 权衡；调大可压误检、吞连发；调小则相反）：
+
+| 位置 | 键 / 开关 | 记录值 |
+|------|-----------|--------|
+| `calibrated_detector_params.json` | `cluster_window_sec` | **0.1** |
+| `calibrated_detector_params.json` | `hard_dedup_gap_sec` | **0.1**（最终在时间轴间隔 **小于** 该秒数则并为一条） |
+| `annotate_shots.py` | `--shot-nms` 默认 | **0.1**（`0` 表示关掉标注侧 NMS） |
+
+实现：`detectors/shot_audio.py` 中 Stage3 聚类 + 收尾 hard dedup；标注程序在载入机器结果后再做一次 `non_maximum_suppression`。
+
+---
+
 ### 3. 两阶段：候选 + 二次分类器
 
 **思路**：当前 pipeline 做“高召回候选”，再单独训一个**只做二分类**的模型（gunshot vs not），对每个候选做一次判别，筛掉明显误报。

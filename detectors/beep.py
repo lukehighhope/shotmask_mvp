@@ -2,6 +2,9 @@
 Beep detection: find the single start beep in shooting videos.
 Tuned using all *beep.txt ground truth (traning data/01032026, outdoor S1-S8).
 
+Physical prior (product): beep ~0.3s tonal burst; little structure before onset — analysis
+windows for dominant-frequency / tonal checks use beep_analysis_duration_s (default 0.3).
+
 Run: python evaluate_beep_detector.py  # MAE on GT
      python evaluate_beep_detector.py --tune  # grid search params
 
@@ -14,6 +17,8 @@ from scipy.signal import butter, lfilter, find_peaks
 
 # 主探测模式: cnn_tonal_primary=True 时以滑窗 CNN+主频 为主；否则规则峰+CNN/主频选峰
 BEEP_CONFIG = {
+    # 主频/CNN 校验用的分析窗长（秒），与实测 beep 持续 ~0.3s 对齐；beep 前多为低能量易区分
+    "beep_analysis_duration_s": 0.3,
     "cnn_tonal_primary": True,  # True=滑窗 CNN+主频 为主探测手段
     "cnn_tonal_step_s": 0.15,   # 滑窗步长(秒)
     "cnn_tonal_min_prob": 0.5,  # CNN 阈值，且主频需在 1.25–5.2kHz
@@ -24,7 +29,7 @@ BEEP_CONFIG = {
     "tonal_max_span_s": 5.0,
     "head_s": 3.0,           # Stats from first N s for threshold (avoid gunshots inflating std)
     "min_search_s": 0.5,     # Ignore peaks before this (start noise)
-    "max_search_s": 30.0,    # Consider peaks up to this (outdoor beeps can be 18–24s)
+    "max_search_s": 60.0,   # Consider peaks up to this (covers late outdoor beeps)
     "k_list": (5, 4, 3, 2.5, 2.0),  # Threshold = mean + k*std; try from strict to loose
     "smooth_win_s": 0.01,
     "peak_distance_s": 0.2,
@@ -50,6 +55,11 @@ BEEP_BANDPASS_LOW = 1500
 BEEP_BANDPASS_HIGH = 5500
 BEEP_TONAL_FREQ_LOW = 1250   # 候选峰 0.3s 窗口主频需在此范围内才视为 beep (1.25–5.2kHz)
 BEEP_TONAL_FREQ_HIGH = 5200
+
+
+def _beep_analysis_duration_s(config):
+    """主频校验/CNN 滑窗与共用的分析片段长度（秒），默认与 beep ~0.3s 一致。"""
+    return float(config.get("beep_analysis_duration_s", 0.3))
 
 
 def bandpass(data, sr, low=None, high=None):
@@ -79,11 +89,13 @@ def _dominant_freq_hz(data, sr, start_s, duration_s=0.3, freq_low=200, freq_high
     return float(freqs[idx])
 
 
-def _is_beep_like(data, sr, t_sec, config, duration_s=0.3):
+def _is_beep_like(data, sr, t_sec, config, duration_s=None):
     """
     在精探时间 t_sec 处验证是否为 beep：主频 [t, t+duration_s] 在 1.25–5.2kHz，
     且（若启用）CNN 在 t_sec 处得分 >= 阈值。用于过滤精探后实为枪声等误检。
     """
+    if duration_s is None:
+        duration_s = _beep_analysis_duration_s(config)
     tonal_low = config.get("tonal_freq_low", BEEP_TONAL_FREQ_LOW)
     tonal_high = config.get("tonal_freq_high", BEEP_TONAL_FREQ_HIGH)
     f = _dominant_freq_hz(data, sr, t_sec, duration_s=duration_s, freq_low=200, freq_high=6000)
@@ -112,11 +124,12 @@ def _detect_beeps_cnn_tonal_primary(data, sr, duration_s, config):
     返回 t0 (float) 或 None（未找到或未加载 CNN）。
     """
     min_s = config.get("min_search_s", 0.5)
-    max_s = min(config.get("max_search_s", 30.0), duration_s - 0.4)
+    max_s = min(config.get("max_search_s", 60.0), duration_s - 0.4)
     step = config.get("cnn_tonal_step_s", 0.15)
     min_prob = config.get("cnn_tonal_min_prob", 0.5)
     tonal_low = config.get("tonal_freq_low", BEEP_TONAL_FREQ_LOW)
     tonal_high = config.get("tonal_freq_high", BEEP_TONAL_FREQ_HIGH)
+    ad_s = _beep_analysis_duration_s(config)
     try:
         from detectors.beep_cnn import load_cnn_beep, mel_at_time as beep_cnn_mel, predict_proba_one as beep_cnn_proba
         cnn_model, cnn_device = load_cnn_beep()
@@ -133,7 +146,7 @@ def _detect_beeps_cnn_tonal_primary(data, sr, duration_s, config):
     while t <= max_s:
         mel = beep_cnn_mel(data, sr, t)
         p = beep_cnn_proba(cnn_model, cnn_device, mel)
-        f = _dominant_freq_hz(data, sr, t, duration_s=0.3, freq_low=200, freq_high=6000)
+        f = _dominant_freq_hz(data, sr, t, duration_s=ad_s, freq_low=200, freq_high=6000)
         tonal_ok = f is not None and tonal_low <= f <= tonal_high
         if p >= min_prob and tonal_ok:
             if best_first is None:
@@ -154,11 +167,12 @@ def _get_coarse_beeps_cnn_tonal(data, sr, duration_s, config, min_gap_s=1.0):
     滑窗 CNN+主频，收集所有满足条件的 t；按 min_gap_s 合并邻近点，返回粗时间列表（用于全视频多 beep）。
     """
     min_s = config.get("min_search_s", 0.5)
-    max_s = min(config.get("max_search_s", 30.0), duration_s - 0.4)
+    max_s = min(config.get("max_search_s", 60.0), duration_s - 0.4)
     step = config.get("cnn_tonal_step_s", 0.15)
     min_prob = config.get("cnn_tonal_min_prob", 0.5)
     tonal_low = config.get("tonal_freq_low", BEEP_TONAL_FREQ_LOW)
     tonal_high = config.get("tonal_freq_high", BEEP_TONAL_FREQ_HIGH)
+    ad_s = _beep_analysis_duration_s(config)
     try:
         from detectors.beep_cnn import load_cnn_beep, mel_at_time as beep_cnn_mel, predict_proba_one as beep_cnn_proba
         cnn_model, cnn_device = load_cnn_beep()
@@ -172,7 +186,7 @@ def _get_coarse_beeps_cnn_tonal(data, sr, duration_s, config, min_gap_s=1.0):
     while t <= max_s:
         mel = beep_cnn_mel(data, sr, t)
         p = beep_cnn_proba(cnn_model, cnn_device, mel)
-        f = _dominant_freq_hz(data, sr, t, duration_s=0.3, freq_low=200, freq_high=6000)
+        f = _dominant_freq_hz(data, sr, t, duration_s=ad_s, freq_low=200, freq_high=6000)
         tonal_ok = f is not None and tonal_low <= f <= tonal_high
         if p >= min_prob and tonal_ok:
             hits.append((float(t), float(p)))
@@ -232,6 +246,7 @@ def _get_coarse_beeps_rule(data, sr, duration_s, config, min_gap_s=1.5):
         candidates = sorted(peak_times_w)
     tonal_low = config.get("tonal_freq_low", BEEP_TONAL_FREQ_LOW)
     tonal_high = config.get("tonal_freq_high", BEEP_TONAL_FREQ_HIGH)
+    ad_s = _beep_analysis_duration_s(config)
     use_cnn = config.get("use_cnn_beep", True)
     cnn_min = config.get("cnn_beep_min_prob", 0.3)
     cnn_model, cnn_device = None, None
@@ -243,7 +258,7 @@ def _get_coarse_beeps_rule(data, sr, duration_s, config, min_gap_s=1.5):
             pass
     passed = []
     for t in candidates:
-        f = _dominant_freq_hz(data, sr, t, duration_s=0.3, freq_low=200, freq_high=6000)
+        f = _dominant_freq_hz(data, sr, t, duration_s=ad_s, freq_low=200, freq_high=6000)
         tonal_ok = f is not None and tonal_low <= f <= tonal_high
         if not tonal_ok:
             continue
@@ -367,10 +382,11 @@ def _detect_beeps_impl(audio_path, fps, config):
     if t0 is None:
         tonal_low = config.get("tonal_freq_low", BEEP_TONAL_FREQ_LOW)
         tonal_high = config.get("tonal_freq_high", BEEP_TONAL_FREQ_HIGH)
+        ad_s = _beep_analysis_duration_s(config)
         for t in ordered:
             if t > t_first + max_span_s:
                 break
-            f = _dominant_freq_hz(data, sr, t, duration_s=0.3, freq_low=200, freq_high=6000)
+            f = _dominant_freq_hz(data, sr, t, duration_s=ad_s, freq_low=200, freq_high=6000)
             if f is not None and tonal_low <= f <= tonal_high:
                 t0 = float(t)
                 break

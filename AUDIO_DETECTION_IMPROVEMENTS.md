@@ -39,10 +39,13 @@
 
 **原问题**: `distance=0.12s` 过于武断，会误杀连发，也会错配 peak
 
-**改进**:
-- **聚类窗口**: 250ms 内的 peaks 视为同一簇（回声/反射/AGC回弹）
-- 每簇选 **score 最高者**输出
+**改进（当前记录在案的默认值）**:
+- **聚类窗口** `cluster_window_sec`: **0.1 s**。相邻候选峰间隔 ≤ **100 ms**（链式聚类）归为一簇，每簇只留 **score 最高** 的一条；用于压制回声/双检，同时尽量保住 double tap（间距明显大于 ~100 ms 的可分两簇）。
+- **收尾硬去重** `hard_dedup_gap_sec`: **0.1 s**。对每个簇输出后的最终列表，若两枪间隔 **小于** **0.1 s**，再合并为一条（保留更高置信度）。若为 **0** 可在配置里关闭该步。
+- **标注程序 NMS**：`annotate_shots.py` 默认 `--shot-nms 0.1`，与上文同一量级（可用 `--shot-nms 0` 关掉）。
 - 速率限制只做"异常保护"（>6 shot/s 才截断），不作为核心逻辑
+
+（历史版本曾用过 250 ms 聚类、120 ms 硬合并，或 tighter 70 ms；当前默认 **100 ms** 与旧时 120 ms 接近，略利于压回声 / 略微增加连发并枪风险，可按数据再调 JSON。）
 
 ### 5. ✅ 多特征软融合打分（替代 height/prominence）
 
@@ -77,24 +80,27 @@
 6. 归一化置信度
 
 ### Stage 3: 聚类去重
-1. 按时间聚类（250ms窗口）
-2. 每簇选最高分
+1. 按时间聚类（默认 **cluster_window_sec = 0.1 s**）
+2. 每簇选最高分；再按 **hard_dedup_gap_sec = 0.1 s** 对相邻输出做一次合并（&lt; 100 ms → 一枪）
 3. 异常保护（>6 shot/s 才限制）
 
 ## 使用方法
 
 ### 启用改进算法
 
-当前已默认启用改进算法。参数文件 `calibrated_detector_params.json`:
+当前已默认启用改进算法。参数文件 `calibrated_detector_params.json` 中与「多近算一枪」相关的记录值：
 
 ```json
 {
   "use_improved": true,
-  "threshold_percentile": null,    // null = 使用 MAD 自适应阈值
-  "cluster_window_sec": 0.25,      // 聚类窗口（替代 min_dist_sec）
-  "export_diagnostics": false      // 是否导出诊断曲线
+  "threshold_percentile": null,
+  "cluster_window_sec": 0.1,
+  "hard_dedup_gap_sec": 0.1,
+  "export_diagnostics": false
 }
 ```
+
+说明：**cluster_window_sec** 控制 Stage3 相邻峰链式合并；**hard_dedup_gap_sec** 控制最终在时间轴上「小于多少秒合并为同一枪」（与标注 `--shot-nms` 默认 **0.1** 对齐）。
 
 ### 导出诊断曲线（推荐）
 
@@ -144,7 +150,7 @@ python extract_audio_plot.py --video 1.mp4 --no-show
 3. 检查诊断曲线：flux 是否有响应？
 
 ### 如果误报多：
-1. 增加聚类窗口：`cluster_window_sec: 0.30`
+1. 可把聚类/合并略放大（例如 `cluster_window_sec: 0.12`、`hard_dedup_gap_sec: 0.12`，或 `--shot-nms 0.12`），会更吞近邻峰值（连发第二枪更易被合并，需权衡）。
 2. 调整打分权重：降低 `onset_norm` 权重，增加 `r1_norm` 权重
 3. 检查诊断曲线：误报的 r1/r2 比值特征是什么？
 

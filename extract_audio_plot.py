@@ -16,7 +16,7 @@ import soundfile as sf
 from scipy.ndimage import maximum_filter1d, minimum_filter1d
 from scipy.optimize import linear_sum_assignment
 
-from detectors.beep import detect_beeps
+from detectors.beep import detect_all_beeps
 from detectors.shot_audio import (
     detect_shots,
     CALIBRATED_PARAMS_FILENAME,
@@ -1627,7 +1627,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
     try:
         fps = get_fps_from_video(video)
         if fps is not None and beep_times is None:
-            beeps = detect_beeps(audio_mono, fps)
+            beeps = detect_all_beeps(audio_mono, fps)
             beep_times = [b["t"] for b in beeps]
             if beep_times:
                 print(f"Beep time(s) for x-axis: {beep_times}")
@@ -1639,7 +1639,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
             if not ref_times:
                 ref_times = ref_shot_times(t0_beep)
                 ref_source = "reference_splits(beep)"
-            beep_src = os.path.basename(beep_txt) if (beep_txt and os.path.isfile(beep_txt)) else "detect_beeps"
+            beep_src = os.path.basename(beep_txt) if (beep_txt and os.path.isfile(beep_txt)) else "detect_all_beeps"
             try:
                 cal = load_calibrated_params()
                 use_ast = cal.get("use_ast_gunshot", bool(cal.get("ast_gunshot_path") and not cal.get("cnn_gunshot_path")))
@@ -1783,10 +1783,6 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                     print(f"LogReg model saved to: {out_path}")
                     return
             shots = detect_shots(audio_mono, fps)
-            # Shots all happen after beep: drop any detection before last beep (t0)
-            if beep_times and len(shots) > 0:
-                t0_beep = float(beep_times[-1])
-                shots = [s for s in shots if s["t"] >= t0_beep]
             shot_times = [s["t"] for s in shots]
             if shot_times:
                 print(f"Shot time(s) for envelope markers: {shot_times}")
@@ -1800,7 +1796,7 @@ def main(video, output_image=None, show_plot=True, use_ref=False, use_calibrate=
                     audio_path=audio_mono,
                     energy_threshold=0.3,
                     min_dist_sec=0.08,
-                    t0_beep=float(beep_times[-1]) if beep_times else None,
+                    t0_beep=None,
                 )
                 energy_shot_times = [s["t"] for s in energy_shots]
                 if energy_shot_times:

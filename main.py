@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import argparse
 
-from detectors.beep import detect_beeps
+from detectors.beep import detect_all_beeps
 from detectors.shot_audio import detect_shots, cluster_peaks_by_time
 from detectors.shot_motion import detect_shots_from_motion_roi_auto, detect_shots_from_motion_improved
 from reference_splits import ref_shot_times as get_ref_shot_times
@@ -376,7 +376,7 @@ def main(video, mode="all", shots_filter="all", nms_s=0.0, sweep_threshold=False
         print("=" * 50)
         print("Detecting beep time")
         print("=" * 50)
-        beeps = detect_beeps(audio, fps)
+        beeps = detect_all_beeps(audio, fps)
         
         print(f"\nDetected {len(beeps)} beep(s):")
         for i, beep in enumerate(beeps, 1):
@@ -446,20 +446,14 @@ def main(video, mode="all", shots_filter="all", nms_s=0.0, sweep_threshold=False
 
     # Audio detection: use original fps (audio is extracted from original video)
     # Note: Time 't' is calculated from audio sample rate, fps is only used for frame calculation
-    beeps = detect_beeps(audio, original_fps)
-    # Audio detection: return candidates for GT diagnostics
+    beeps = detect_all_beeps(audio, original_fps)
+    # Earliest beep: used for split-style ref GT / relative timeline export only (do not crop detections).
+    t0_beep = float(beeps[0]["t"]) if beeps else 0.0
     shots_audio_result = detect_shots(audio, original_fps, return_candidates=True)
     if isinstance(shots_audio_result, tuple) and len(shots_audio_result) == 2:
         shots_audio, audio_candidates = shots_audio_result
     else:
         shots_audio, audio_candidates = shots_audio_result, []
-    
-    # Shots all happen after beep: drop any detection before beep (video start noise)
-    t0_beep = float(beeps[0]["t"]) if beeps else 0.0
-    if beeps and len(shots_audio) > 0:
-        shots_audio = [s for s in shots_audio if s["t"] >= t0_beep]
-        if audio_candidates:
-            audio_candidates = [c for c in audio_candidates if c.get("t", 0) >= t0_beep]
     
     # FN recovery: when ref available, add near-miss candidates (confidence >= 0.2, within 0.08s of ref)
     if beeps and video and audio_candidates:
@@ -589,9 +583,9 @@ def main(video, mode="all", shots_filter="all", nms_s=0.0, sweep_threshold=False
 
     # Output: shot time sequence starting from beep (t0), one time per line (seconds)
     with open("outputs/shot_times_since_beep.txt", "w", encoding="utf-8") as f:
-        f.write("# t0 = first beep start time (s)\n")
+        f.write("# t0 = earliest detected beep (s); shot times below are absolute_t - t0 (may be negative if a shot precedes that beep)\n")
         f.write(f"# t0_beep_s = {t0_beep_s}\n")
-        f.write("# Shot time sequence relative to t0 (seconds), one per line\n")
+        f.write("# One relative time per line\n")
         for t in shot_times_since_beep:
             f.write(f"{t}\n")
 

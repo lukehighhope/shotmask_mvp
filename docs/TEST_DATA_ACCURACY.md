@@ -16,6 +16,7 @@ python evaluate_multivideo.py --folder "test data" --cnn-only --tol 0.08
 
 - **FN 恢复**：对每个 GT，若 ±0.04s 内无检测，则在 ±0.10s 内找置信度 ≥0.15 的候选补上，减少漏检。
 - **--tol**：评估脚本支持 `--tol`（默认 0.04），适当放宽可提高召回、F1。
+- **【记录】合并窗 0.1 s**：`calibrated_detector_params.json` 中 `cluster_window_sec` 与 `hard_dedup_gap_sec` 现为 **0.1**（相邻峰聚类阈值与最终「&lt;0.1 s → 一枪」去重）；`annotate_shots.py` 默认 `--shot-nms 0.1` 与之一致。
 
 | 配置 | 整体 P | 整体 R | 整体 F1 |
 |------|--------|--------|---------|

@@ -5,7 +5,7 @@
 Usage:
   python annotate_shots.py --video "test data/v1.mp4"
   python annotate_shots.py --video "traning data/jeff 03-04/S1-main.mp4"
-  （默认会用校准置信度阈值 + 枪声NMS；超多候选时用 --annotate-loose 相当于旧逻辑）
+  （默认可用校准置信度阈值 + 枪声NMS；机检枪声不再按 beep 时刻裁掉 beep 之前的峰。无 *beep.txt 时用 detect_all_beeps 可多 beep。超多候选时用 --annotate-loose）
 
 操作说明：
   - 右键点击波形       → 新增枪声标注线（黑线）
@@ -43,7 +43,7 @@ from extract_audio_plot import (
     get_audio_start_time,
     extract_audio as extract_audio_ch,
 )
-from detectors.beep import detect_beeps
+from detectors.beep import detect_all_beeps
 from detectors.shot_audio import detect_shots
 from main import get_ffmpeg_cmd, get_ffprobe_cmd, ffprobe_info, non_maximum_suppression
 import subprocess
@@ -771,7 +771,7 @@ def _prepare_video(
     force_detect=False,
     session_shot_backend="auto",
     annotate_loose_min_conf=False,
-    annotate_shot_nms_sec=0.12,
+    annotate_shot_nms_sec=0.1,
 ):
     """Extract audio, load or detect annotations, build waveform data.
     Returns (cal_data_dict, video_dir, video_base, anno_dir).
@@ -827,9 +827,9 @@ def _prepare_video(
         print(f"  Loaded *beep.txt: {beep_times}")
 
     if not has_beep:
-        print("Detecting beep...")
+        print("Detecting beep(s)...")
         try:
-            beeps = detect_beeps(audio_mono, fps)
+            beeps = detect_all_beeps(audio_mono, fps)
             beep_times = [float(b["t"]) for b in beeps]
             print(f"  Detected {len(beep_times)} beep(s): {beep_times}")
         except Exception as e:
@@ -838,9 +838,6 @@ def _prepare_video(
     if not has_cali:
         print("Detecting gunshots...")
         try:
-            # Shots must be at/after the start beep. Use the *earliest* beep time: a false
-            # detection late in the file made beep_times[-1] huge and removed every shot.
-            t0_beep = min(beep_times) if beep_times else 0.0
             back, src = _resolve_shot_detector_backend(
                 anno_dir, video_base, cali_path, session_shot_backend
             )
@@ -848,10 +845,6 @@ def _prepare_video(
             shots = _detect_shots_with_backend(
                 audio_mono, fps, back, loose_min_confidence=annotate_loose_min_conf
             )
-            n_before_t0 = len(shots)
-            shots = [s for s in shots if float(s["t"]) >= t0_beep]
-            if n_before_t0 and not shots:
-                print(f"  Warning: all shots dropped by t>={t0_beep:.3f}s beep cut (earliest beep); check beep detection")
             if annotate_shot_nms_sec and annotate_shot_nms_sec > 0 and shots:
                 n_nms_before = len(shots)
                 shots = non_maximum_suppression(shots, time_threshold_s=float(annotate_shot_nms_sec))
@@ -934,7 +927,7 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                           initial_stream_token: str | None = None,
                           picker_root: str | None = None,
                           default_speed=0.5, session_shot_backend="auto",
-                          annotate_loose_min_conf=False, annotate_shot_nms_sec=0.12):
+                          annotate_loose_min_conf=False, annotate_shot_nms_sec=0.1):
     """HTTP server for the annotation tool.
 
     Endpoints:
@@ -1110,19 +1103,22 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
             # Special: open native file picker and return chosen path as JSON
             if path == "/open_file_dialog":
                 def _pick_initialdir():
+                    # Prefer the folder of the video already in this session so "Open Video" stays local
+                    # (e.g. sibling clips). Picker pin (--picker-dir / SHOTMASK_PICKER_DIR) applies when there
+                    # is no usable video dir yet — not on every reopen, otherwise dialogs always jump to traning data.
+                    v = state.get("video_path")
+                    if isinstance(v, str) and os.path.isfile(v):
+                        vd = os.path.dirname(os.path.abspath(v))
+                        if os.path.isdir(vd):
+                            return os.path.normpath(vd)
+                    sd = state.get("save_dir")
+                    if isinstance(sd, str) and os.path.isdir(sd):
+                        return os.path.normpath(sd)
                     pr = state.get("picker_root")
                     if isinstance(pr, str) and os.path.isdir(pr):
                         return os.path.normpath(pr)
                     # Without initialdir, Windows often reuses the last browse path for python.exe/py.exe
                     # (feels like "it remembers my last Open Video folder" across runs).
-                    v = state.get("video_path")
-                    if isinstance(v, str):
-                        vd = os.path.dirname(os.path.abspath(v))
-                        if os.path.isdir(vd):
-                            return vd
-                    sd = state.get("save_dir")
-                    if isinstance(sd, str) and os.path.isdir(sd):
-                        return sd
                     return serve_dir if os.path.isdir(serve_dir) else os.getcwd()
 
                 def _pick():
@@ -1160,7 +1156,7 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                     return
                 vp = state.get("video_path")
                 if vp and os.path.isfile(vp):
-                    print(f"[GET /v/…] token ok -> {vp}", flush=True)
+                    # Browser <video> issues many GETs (Range chunks, buffering, seeks); do not log each one.
                     _serve_file(
                         self,
                         vp,
@@ -1297,7 +1293,7 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                         force_detect=False,
                         session_shot_backend=state.get("session_shot_backend", "auto"),
                         annotate_loose_min_conf=bool(state.get("annotate_loose_min_conf", False)),
-                        annotate_shot_nms_sec=float(state.get("annotate_shot_nms_sec", 0.12)),
+                        annotate_shot_nms_sec=float(state.get("annotate_shot_nms_sec", 0.1)),
                     )
                     state["video_path"] = os.path.abspath(os.path.normpath(vpath))
                     state["save_dir"]   = anno_dir  # save to annotation dir, not tmp/
@@ -1421,9 +1417,9 @@ def main():
     ap.add_argument(
         "--shot-nms",
         type=float,
-        default=0.12,
+        default=0.1,
         metavar="SEC",
-        help="Merge detections within SEC s, keep highest confidence (default 0.12; 0=off).",
+        help="Merge detections within SEC s, keep highest confidence (default 0.1; 0=off).",
     )
     args = ap.parse_args()
 
