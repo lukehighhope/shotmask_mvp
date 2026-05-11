@@ -3,7 +3,7 @@
 这样 ref 文件自包含，不依赖运行时 beep 检测。
 
 Usage:
-  python generate_ref_txt_from_beep.py --folder "traning data/outdoor-20260208T235429Z-1-001"
+  python generate_ref_txt_from_beep.py --folder "training data/outdoor-20260208T235429Z-1-001"
 """
 import argparse
 import json

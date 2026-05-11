@@ -15,10 +15,10 @@
 
 ```bash
 # 仅室内数据
-python train_ast_gunshot.py --folder "traning data/01032026" --epochs 40 --augment --out outputs/ast_gunshot.pt
+python train_ast_gunshot.py --folder "training data/01032026" --epochs 40 --augment --out outputs/ast_gunshot.pt
 
 # 多目录（与 CNN 相同数据）
-python train_ast_gunshot.py --folder "traning data" --recursive --epochs 30 --augment --out outputs/ast_gunshot.pt --save-config
+python train_ast_gunshot.py --folder "training data" --recursive --epochs 30 --augment --out outputs/ast_gunshot.pt --save-config
 ```
 
 `--save-config` 会把 `ast_gunshot_path` 写入 `calibrated_detector_params.json`。

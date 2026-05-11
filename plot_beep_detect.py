@@ -3,8 +3,8 @@
 默认保存到输入文件夹内：<folder>/beep_detect.png。
 
 Usage:
-  python plot_beep_detect.py --folder "traning data/01032026"
-  python plot_beep_detect.py --folder "traning data/01032026" --output 其他路径/beep_detect.png
+  python plot_beep_detect.py --folder "training data/01032026"
+  python plot_beep_detect.py --folder "training data/01032026" --output 其他路径/beep_detect.png
 """
 import os
 import argparse
@@ -73,7 +73,7 @@ def draw_one_row(data, sr, beep_t, label, row_width=1200, row_height=180):
 
 def main():
     ap = argparse.ArgumentParser(description="One image: 1-5 waveforms with beep, top to bottom")
-    ap.add_argument("--folder", default="traning data/01032026")
+    ap.add_argument("--folder", default="training data/01032026")
     ap.add_argument("--output", default=None, help="默认保存到 folder/beep_detect.png")
     args = ap.parse_args()
     folder = os.path.abspath(args.folder)

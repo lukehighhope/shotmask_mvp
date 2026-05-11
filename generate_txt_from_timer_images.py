@@ -3,8 +3,8 @@
 用于 outdoor 等子目录下的 S1-timer.JPG, S2-timer.PNG 等。
 
 Usage:
-  python generate_txt_from_timer_images.py --folder "traning data"
-  python generate_txt_from_timer_images.py --folder "traning data/outdoor-20260208T235429Z-1-001"
+  python generate_txt_from_timer_images.py --folder "training data"
+  python generate_txt_from_timer_images.py --folder "training data/outdoor-20260208T235429Z-1-001"
 """
 import argparse
 import os
@@ -76,7 +76,7 @@ def process_folder(folder):
 
 def main():
     ap = argparse.ArgumentParser(description="From *-timer images in folder, OCR times and write base.txt")
-    ap.add_argument("--folder", default="traning data", help="Root folder (will process this and subfolders if --recursive)")
+    ap.add_argument("--folder", default="training data", help="Root folder (will process this and subfolders if --recursive)")
     ap.add_argument("--recursive", action="store_true", help="Process subfolders too")
     args = ap.parse_args()
     root = os.path.abspath(args.folder)

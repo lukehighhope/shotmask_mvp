@@ -4,7 +4,7 @@
 
 Usage:
   python annotate_shots.py --video "test data/v1.mp4"
-  python annotate_shots.py --video "traning data/jeff 03-04/S1-main.mp4"
+  python annotate_shots.py --video "training data/jeff 03-04/S1-main.mp4"
   （默认可用校准置信度阈值 + 枪声NMS；机检枪声不再按 beep 时刻裁掉 beep 之前的峰。无 *beep.txt 时用 detect_all_beeps 可多 beep。超多候选时用 --annotate-loose）
 
 操作说明：
@@ -1105,7 +1105,7 @@ def run_annotation_server(serve_dir, port, html_basename, ffmpeg_cmd,
                 def _pick_initialdir():
                     # Prefer the folder of the video already in this session so "Open Video" stays local
                     # (e.g. sibling clips). Picker pin (--picker-dir / SHOTMASK_PICKER_DIR) applies when there
-                    # is no usable video dir yet — not on every reopen, otherwise dialogs always jump to traning data.
+                    # is no usable video dir yet — not on every reopen, otherwise dialogs always jump to training data.
                     v = state.get("video_path")
                     if isinstance(v, str) and os.path.isfile(v):
                         vd = os.path.dirname(os.path.abspath(v))

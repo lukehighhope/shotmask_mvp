@@ -1,6 +1,6 @@
 """
 Beep detection: find the single start beep in shooting videos.
-Tuned using all *beep.txt ground truth (traning data/01032026, outdoor S1-S8).
+Tuned using all *beep.txt ground truth (training data/01032026, outdoor S1-S8).
 
 Physical prior (product): beep ~0.3s tonal burst; little structure before onset — analysis
 windows for dominant-frequency / tonal checks use beep_analysis_duration_s (default 0.3).

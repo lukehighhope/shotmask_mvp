@@ -3,7 +3,7 @@
 若 S1.txt 等已被改成绝对时间，则先根据 beep_overrides.json 还原为相对 beep 的秒数，再写 beep 文件。
 
 Usage:
-  python write_beep_txt_only.py --folder "traning data/outdoor-20260208T235429Z-1-001"
+  python write_beep_txt_only.py --folder "training data/outdoor-20260208T235429Z-1-001"
 """
 import argparse
 import json

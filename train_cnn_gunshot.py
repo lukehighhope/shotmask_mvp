@@ -3,14 +3,14 @@
 Ref 优先：同目录 *cali.txt（校准 shot 时刻），若无则用 *.txt。
 网络从谱图学习特征，替代/辅助手工特征+LogReg。
 
---use-split 时读取 traning data/dataset_split.json：其中 train 列表为训练集。
+--use-split 时读取 training data/dataset_split.json：其中 train 列表为训练集。
 划分约定（写进 JSON 时）：每个叶子文件夹内按文件名字排序，第一个 mp4 作为 val，其余有标注的作为 train。
 
 提高准确度：多训几轮(--epochs)、开数据增强(--augment)、学习率衰减(默认开)、继续训练(--resume)。
 Usage:
   python train_cnn_gunshot.py --folder 01032026 --epochs 50 --out outputs/cnn_gunshot.pt --save-config
   python train_cnn_gunshot.py --folder 01032026 --epochs 20 --resume --out outputs/cnn_gunshot.pt   # 在已有模型上再训 20 轮
-  python train_cnn_gunshot.py --folder "traning data" --recursive   # 用 traning data 下所有子目录
+  python train_cnn_gunshot.py --folder "training data" --recursive   # 用 training data 下所有子目录
   python train_cnn_gunshot.py --use-split --epochs 50 --out outputs/cnn_gunshot.pt   # 读取 dataset_split.json；划分通常是「每文件夹名字序第一个 mp4 = val，其余 = train」写入 JSON，本脚本只训 train 列表里的视频
 """
 import os
@@ -162,8 +162,8 @@ def build_mel_dataset(folder, cal_cfg=None, only_videos=None, gt_tol=GT_TOL_DEFA
 def main():
     ap = argparse.ArgumentParser(description="Train CNN on mel-spectrograms for gunshot classification")
     ap.add_argument("--folder", default="01032026", help="Single folder with .mp4 and .txt ref (or root when --recursive)")
-    ap.add_argument("--recursive", action="store_true", help="Use all immediate subfolders of --folder (e.g. traning data -> 01032026, outdoor-...)")
-    ap.add_argument("--use-split", action="store_true", help="Use traning data/dataset_split.json: explicit \"train\" paths when present; else legacy split in dataset_split.py. Common rule: first sorted .mp4 per folder = val, rest = train.")
+    ap.add_argument("--recursive", action="store_true", help="Use all immediate subfolders of --folder (e.g. training data -> 01032026, outdoor-...)")
+    ap.add_argument("--use-split", action="store_true", help="Use training data/dataset_split.json: explicit \"train\" paths when present; else legacy split in dataset_split.py. Common rule: first sorted .mp4 per folder = val, rest = train.")
     ap.add_argument(
         "--use-split-all",
         action="store_true",
@@ -217,7 +217,7 @@ def main():
             return 1
         folders_with_videos = get_train_folders_with_videos()
         if not folders_with_videos:
-            print("No train folders from dataset_split (traning data empty or no .mp4?)")
+            print("No train folders from dataset_split (training data empty or no .mp4?)")
             return 1
         print(f"Using dataset_split.json (val = first sorted .mp4 per folder; this run = train paths only): {len(folders_with_videos)} folder(s)\n")
         mels, labels = [], []

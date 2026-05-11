@@ -6,9 +6,9 @@ REM Uses calibrated_detector_params.json min_confidence_threshold (currently 0.6
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-REM ---- Data / file picker on D: (edit SHOTMASK_DATA_BASE if yours differs) -----
+REM ---- Training data root / file picker (edit SHOTMASK_DATA_BASE if yours differs) -----
 REM annotate_shots picks up SHOTMASK_PICKER_DIR for Open Video; training scripts use SHOTMASK_TRAINING_DATA_ROOT.
-set "SHOTMASK_DATA_BASE=D:\shotmask_data\traning data"
+set "SHOTMASK_DATA_BASE=F:\training data"
 if not defined SHOTMASK_TRAINING_DATA_ROOT (
   set "SHOTMASK_TRAINING_DATA_ROOT=!SHOTMASK_DATA_BASE!"
 )

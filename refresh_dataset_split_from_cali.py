@@ -1,4 +1,4 @@
-"""Rewrite traning data/dataset_split.json from all *cali.txt (no backup/)."""
+"""Rewrite training data/dataset_split.json from all *cali.txt (no backup/)."""
 import json
 from collections import defaultdict
 from pathlib import Path

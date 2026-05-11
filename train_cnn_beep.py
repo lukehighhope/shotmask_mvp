@@ -4,7 +4,7 @@
 
 Usage:
   python train_cnn_beep.py
-  python train_cnn_beep.py --folders "traning data/01032026" "traning data/outdoor-20260208T235429Z-1-001"
+  python train_cnn_beep.py --folders "training data/01032026" "training data/outdoor-20260208T235429Z-1-001"
   python train_cnn_beep.py --epochs 50 --out outputs/cnn_beep.pt --augment
 """
 import os
@@ -101,7 +101,7 @@ def build_beep_dataset(folders=None):
 
 def main():
     ap = argparse.ArgumentParser(description="Train 2D CNN for beep vs non-beep (mel 0.35s)")
-    ap.add_argument("--folders", nargs="*", default=None, help="Folders with *beep.txt (default: traning data)")
+    ap.add_argument("--folders", nargs="*", default=None, help="Folders with *beep.txt (default: training data)")
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)

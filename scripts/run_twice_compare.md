@@ -6,10 +6,10 @@
 cd c:\Users\Cao\Downloads\shotmask_mvp
 
 # 第一次
-python extract_audio_plot.py --video "traning data/01032026/2.mp4" --no-show 2>&1 | Tee-Object -FilePath run1.txt
+python extract_audio_plot.py --video "training data/01032026/2.mp4" --no-show 2>&1 | Tee-Object -FilePath run1.txt
 
 # 第二次（不改任何东西）
-python extract_audio_plot.py --video "traning data/01032026/2.mp4" --no-show 2>&1 | Tee-Object -FilePath run2.txt
+python extract_audio_plot.py --video "training data/01032026/2.mp4" --no-show 2>&1 | Tee-Object -FilePath run2.txt
 
 # 对比关键行
 Select-String -Path run1.txt, run2.txt -Pattern "Ref|Detector|Shot time|Energy-detected|Matched"

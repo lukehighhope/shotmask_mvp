@@ -1,11 +1,11 @@
 """
 Evaluate beep detector on all *beep.txt ground truth.
-Collects (video, gt_beep) from traning data (and any folder with *beep.txt),
+Collects (video, gt_beep) from training data (and any folder with *beep.txt),
 extracts audio, runs detect_beeps, reports MAE and per-clip errors.
 
 Usage:
   python evaluate_beep_detector.py
-  python evaluate_beep_detector.py --folders "traning data/01032026" "traning data/outdoor-20260208T235429Z-1-001"
+  python evaluate_beep_detector.py --folders "training data/01032026" "training data/outdoor-20260208T235429Z-1-001"
 """
 import os
 import sys
@@ -39,8 +39,8 @@ def collect_beep_gt(folders=None):
     """
     if folders is None:
         folders = [
-            os.path.join(os.path.dirname(__file__), "traning data", "01032026"),
-            os.path.join(os.path.dirname(__file__), "traning data", "outdoor-20260208T235429Z-1-001"),
+            os.path.join(os.path.dirname(__file__), "training data", "01032026"),
+            os.path.join(os.path.dirname(__file__), "training data", "outdoor-20260208T235429Z-1-001"),
         ]
     root = os.path.dirname(__file__)
     entries = []
@@ -90,7 +90,7 @@ def main():
     import argparse
     ap = argparse.ArgumentParser(description="Evaluate beep detector on *beep.txt GT")
     ap.add_argument("--folders", nargs="*", default=None,
-                    help="Folders to scan (default: traning data/01032026 and outdoor)")
+                    help="Folders to scan (default: training data/01032026 and outdoor)")
     ap.add_argument("--quiet", action="store_true", help="Only print MAE and summary")
     args = ap.parse_args()
 

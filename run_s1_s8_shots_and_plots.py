@@ -4,7 +4,7 @@
 Beep 来自各视频同目录的 *beep.txt；若有 2 个及以上 beep，split 起点采用最后一个 beep。
 
 Usage: python run_s1_s8_shots_and_plots.py
-       python run_s1_s8_shots_and_plots.py --folder "traning data/jeff 03-04"
+       python run_s1_s8_shots_and_plots.py --folder "training data/jeff 03-04"
 """
 import os
 import sys
@@ -15,7 +15,7 @@ from extract_audio_plot import main as extract_main
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="S1-S8 gunshot detection + 3 figures per video (waveform, envelope viewer, calibration viewer)")
-    ap.add_argument("--folder", default=os.path.join(os.path.dirname(__file__), "traning data", "jeff 03-04"),
+    ap.add_argument("--folder", default=os.path.join(os.path.dirname(__file__), "training data", "jeff 03-04"),
                     help="Folder containing S1-main.mp4 ... S8-main.mp4 and S1beep.txt ... S8beep.txt")
     args = ap.parse_args()
     folder = os.path.abspath(args.folder)

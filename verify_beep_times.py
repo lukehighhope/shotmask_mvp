@@ -3,8 +3,8 @@
 读取 folder 下的 beep_overrides.json（约略时间），对每个视频在 t±window 内找 beep 峰，写回 verified 时间。
 
 Usage:
-  python verify_beep_times.py --folder "traning data/outdoor-20260208T235429Z-1-001"
-  python verify_beep_times.py --folder "traning data/outdoor-20260208T235429Z-1-001" --window 1.5
+  python verify_beep_times.py --folder "training data/outdoor-20260208T235429Z-1-001"
+  python verify_beep_times.py --folder "training data/outdoor-20260208T235429Z-1-001" --window 1.5
 """
 import argparse
 import json

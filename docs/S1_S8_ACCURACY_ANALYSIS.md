@@ -47,8 +47,8 @@
 
 ```bash
 # CNN-only（与当前波形图一致）
-python evaluate_multivideo.py --folder "traning data/jeff 03-04" --cnn-only
+python evaluate_multivideo.py --folder "training data/jeff 03-04" --cnn-only
 
 # LogReg+CNN
-python evaluate_multivideo.py --folder "traning data/jeff 03-04"
+python evaluate_multivideo.py --folder "training data/jeff 03-04"
 ```

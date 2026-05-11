@@ -2,8 +2,8 @@ from extract_shell_features import process_video
 import numpy as np
 from pathlib import Path
 
-video = Path('traning data/outdoor/dz01032026/1.mp4')
-cali  = Path('traning data/outdoor/dz01032026/1cali.txt')
+video = Path('training data/outdoor/dz01032026/1.mp4')
+cali  = Path('training data/outdoor/dz01032026/1cali.txt')
 
 print(f'Processing: {video.name}')
 X, y = process_video(video, cali, 'test')

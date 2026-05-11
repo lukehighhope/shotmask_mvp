@@ -6,13 +6,13 @@
 
 1. **单目录**：只用一个文件夹里的视频 + 参考时间  
    ```bash
-   python train_cnn_gunshot.py --folder "traning data/01032026"
+   python train_cnn_gunshot.py --folder "training data/01032026"
    ```
    此时训练数据只有 **1.mp4～5.mp4**（01032026）。
 
-2. **递归多目录**：用 `traning data` 下**所有**含 .mp4 的子目录  
+2. **递归多目录**：用 `training data` 下**所有**含 .mp4 的子目录  
    ```bash
-   python train_cnn_gunshot.py --folder "traning data" --recursive
+   python train_cnn_gunshot.py --folder "training data" --recursive
    ```
    此时训练数据 = **01032026（1～5） + outdoor（S1～S8）**。
 
@@ -25,7 +25,7 @@
 - **方案 A：训练时不用 S**  
   只用室内数据训练，在 S 上做测试：  
   ```bash
-  python train_cnn_gunshot.py --folder "traning data/01032026" --epochs 50 --out outputs/cnn_gunshot.pt
+  python train_cnn_gunshot.py --folder "training data/01032026" --epochs 50 --out outputs/cnn_gunshot.pt
   ```  
   然后用当前流程在 S1～S8 上跑 shot 检测，看与 S1.txt～S8.txt 的匹配率。
 
@@ -40,7 +40,7 @@
 
 | 训练命令 | S 是否参与训练 | 在 S 上“100%”是否可信 |
 |----------|----------------|------------------------|
-| `--folder "traning data/01032026"` | 否 | 是，可视为泛化表现 |
-| `--folder "traning data" --recursive` | 是 | 否，属于训练集上的表现 |
+| `--folder "training data/01032026"` | 否 | 是，可视为泛化表现 |
+| `--folder "training data" --recursive` | 是 | 否，属于训练集上的表现 |
 
 若你希望「S 数据集上的数字」代表**真实泛化能力**，请用**未包含 S 的数据**重新训练 CNN（例如仅 01032026），再在 S 上评估。

@@ -1,6 +1,6 @@
 """
 Compare CNN vs AST gunshot detector on the same dataset (ref-based metrics).
-Usage: python compare_cnn_ast.py --folder "traning data/01032026"
+Usage: python compare_cnn_ast.py --folder "training data/01032026"
 """
 import os
 import sys
@@ -34,7 +34,7 @@ def get_ref_for_video(video_path):
 
 def main():
     ap = argparse.ArgumentParser(description="Compare CNN vs AST shot detection on folder with ref .txt")
-    ap.add_argument("--folder", default="traning data/01032026", help="Folder with 1.mp4..5.mp4 and 1.txt..5.txt")
+    ap.add_argument("--folder", default="training data/01032026", help="Folder with 1.mp4..5.mp4 and 1.txt..5.txt")
     ap.add_argument("--match-tol", type=float, default=0.12, help="Match tolerance in seconds (default 0.12)")
     args = ap.parse_args()
     folder = os.path.abspath(args.folder)

@@ -1,9 +1,9 @@
 """
-Read train/val split for traning data.
-Split is defined in traning data/dataset_split.json.
+Read train/val split for training data.
+Split is defined in training data/dataset_split.json.
 
 Supported:
-- Explicit lists: \"train\" / \"val\" with paths relative to traning data/
+- Explicit lists: \"train\" / \"val\" with paths relative to training data/
 - Legacy: last_video_per_folder + \"folders\"
 """
 import os
@@ -26,7 +26,7 @@ def _load_split():
     else:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    # Auto-discover folders when empty: all subdirs of traning data that contain .mp4 (new data folders included)
+    # Auto-discover folders when empty: all subdirs of training data that contain .mp4 (new data folders included)
     if data.get("split_type") == "last_video_per_folder":
         folders = data.get("folders") or []
         if not folders and os.path.isdir(root):

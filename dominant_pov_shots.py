@@ -1,7 +1,7 @@
 """
 Prototype CLI: detect shots, cluster Stage2 spectral features, keep dominant cluster.
 
-  python dominant_pov_shots.py --video \"traning data/.../foo.mp4\"
+  python dominant_pov_shots.py --video \"training data/.../foo.mp4\"
 
 Requires: sklearn (same as AST training).
 """

@@ -2,8 +2,8 @@
 Train AST-style Spectrogram Transformer for gunshot binary classification.
 Uses same data pipeline as train_cnn_gunshot (mel segments from candidates + ref labels). Ref: *cali.txt preferred, else *.txt.
 Usage:
-  python train_ast_gunshot.py --folder "traning data/01032026" --epochs 40 --out outputs/ast_gunshot.pt
-  python train_ast_gunshot.py --folder "traning data" --recursive --epochs 30 --augment --out outputs/ast_gunshot.pt --save-config
+  python train_ast_gunshot.py --folder "training data/01032026" --epochs 40 --out outputs/ast_gunshot.pt
+  python train_ast_gunshot.py --folder "training data" --recursive --epochs 30 --augment --out outputs/ast_gunshot.pt --save-config
   python train_ast_gunshot.py --use-split --epochs 40   # dataset_split: last video per folder = val, new folders auto-included
 """
 import os
@@ -98,9 +98,9 @@ def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
 
 def main():
     ap = argparse.ArgumentParser(description="Train AST (Spectrogram Transformer) for gunshot classification")
-    ap.add_argument("--folder", default="traning data/01032026", help="Folder with .mp4 and .txt ref (or root when --recursive)")
+    ap.add_argument("--folder", default="training data/01032026", help="Folder with .mp4 and .txt ref (or root when --recursive)")
     ap.add_argument("--recursive", action="store_true", help="Use all subfolders of --folder")
-    ap.add_argument("--use-split", action="store_true", help="Use dataset_split: train on all-but-last video per folder under traning data. New folders auto-included.")
+    ap.add_argument("--use-split", action="store_true", help="Use dataset_split: train on all-but-last video per folder under training data. New folders auto-included.")
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -129,7 +129,7 @@ def main():
             return 1
         folders_with_videos = get_train_folders_with_videos()
         if not folders_with_videos:
-            print("No train folders from dataset_split (traning data empty or no .mp4?)")
+            print("No train folders from dataset_split (training data empty or no .mp4?)")
             return 1
         print(f"Using dataset_split (last video per folder = val): {len(folders_with_videos)} folder(s)\n")
         mels, labels = [], []

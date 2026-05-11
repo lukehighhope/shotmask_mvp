@@ -7,7 +7,7 @@ from train_logreg_multivideo import extract_audio, get_fps_duration
 from detectors.beep import detect_beep_near
 
 def main():
-    folder = os.path.join(os.path.dirname(__file__), "traning data", "jeff 03-04")
+    folder = os.path.join(os.path.dirname(__file__), "training data", "jeff 03-04")
     video_path = os.path.join(folder, "S7-main.mp4")
     beep_path = os.path.join(folder, "S7beep.txt")
     if not os.path.isfile(video_path):

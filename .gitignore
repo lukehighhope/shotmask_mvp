@@ -59,6 +59,6 @@ desktop.ini
 tmp/**/*.png
 
 # Training data: track all except .mp4 (large)
-traning data/**/*.mp4
+training data/**/*.mp4
 # Test video data (large, skip when push)
 test data/

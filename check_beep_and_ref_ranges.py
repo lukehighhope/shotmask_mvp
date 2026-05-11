@@ -16,7 +16,7 @@ from train_logreg_multivideo import extract_audio, get_fps_duration
 from extract_audio_plot import calibration_metrics
 
 def main():
-    folder = os.path.join(os.path.dirname(__file__), "traning data", "01032026")
+    folder = os.path.join(os.path.dirname(__file__), "training data", "01032026")
     if not os.path.isdir(folder):
         print("Folder not found:", folder)
         return 1
