@@ -17,7 +17,7 @@ from train_logreg_multivideo import (
     get_fps_duration,
 )
 
-TOL = 0.04
+TOL = 0.06
 NMS_TIME_WINDOW = 0.06
 
 
@@ -158,12 +158,12 @@ def main():
         shots_audio = [s for s in shots_audio if s.get("t", 0) >= beep_t]
         if audio_candidates:
             audio_candidates = [c for c in audio_candidates if c.get("t", 0) >= beep_t]
-        # FN recovery: add candidate near ref if no shot within 0.04s and candidate conf >= 0.15
+        # FN recovery: add candidate near ref if no shot within tol and candidate conf >= 0.15
         if ref_times and audio_candidates:
             shot_times = [float(s["t"]) for s in shots_audio]
             recovered = []
             for ref_t in ref_times:
-                if _nearest_within(shot_times, ref_t, 0.04)[0] is not None:
+                if _nearest_within(shot_times, ref_t, tol)[0] is not None:
                     continue
                 best_c, best_dt = None, 999.0
                 for c in audio_candidates:
@@ -205,7 +205,7 @@ def main():
             ref_list = [float(t) for t in ref_times]
             for s in shots_audio:
                 t = float(s.get("t", 0))
-                if all(abs(t - rt) > TOL for rt in ref_list):
+                if all(abs(t - rt) > tol for rt in ref_list):
                     all_fps.append({"confidence": float(s.get("confidence", 0)), "video": name})
         if all_fps:
             confs = [f["confidence"] for f in all_fps]

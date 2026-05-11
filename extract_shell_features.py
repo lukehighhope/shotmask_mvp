@@ -22,8 +22,9 @@ import os
 import argparse
 from pathlib import Path
 
+from training_data_root import get_training_data_root
 
-DATA_ROOT  = Path("traning data")
+DATA_ROOT  = Path(get_training_data_root())
 SPLIT_JSON = DATA_ROOT / "dataset_split.json"
 
 # Window around each shot time to search for shell casing

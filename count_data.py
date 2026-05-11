@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
-data_root = Path('traning data')
+from training_data_root import get_training_data_root
+
+data_root = Path(get_training_data_root())
 split_file = data_root / 'dataset_split.json'
 split = json.load(open(split_file, encoding='utf-8-sig'))
 

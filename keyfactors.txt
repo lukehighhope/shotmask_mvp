@@ -36,7 +36,7 @@ ShotMask / 枪声标注与探测 — 要点速查
 
 2.1  min_confidence_threshold
 
-     当前值（calibrated_detector_params.json）：0.91
+     当前值（calibrated_detector_params.json）：0.65
 
      含义：Stage2 最终列表的置信度硬门槛，低于则丢弃。调高 → 线更少更干净、易漏枪；调低 → 线多。
 
@@ -74,7 +74,14 @@ ShotMask / 枪声标注与探测 — 要点速查
 
      含义：浏览器连的是「当前正在跑的」Python 会话；未 Ctrl+C 重开则仍可能是上一段视频的状态。
 
-     「Open Video」会换片；可用 start_annotate.bat 先释放 8765 再起。
+3.3  SHOTMASK_TRAINING_DATA_ROOT（训练 / dataset_split.json 的根目录）
+
+     含义：默认为项目下的 traning data/；若数据在别的盘符，可先 set 环境变量再跑 train_*、evaluate_multivideo --use-split、refresh_dataset_split_from_cali、count_data 等。
+
+     例（JSON 里路径为 outdoor/xxx.mp4）：set SHOTMASK_TRAINING_DATA_ROOT=D:\shotmask_data\traning data
+     （该目录内应有 dataset_split.json 与 outdoor\ 等子文件夹；不要把变量指到单独的 outdoor 子目录，除非你改了 JSON 相对路径写法。）
+
+     实现见 training_data_root.py。
 
 
 
@@ -124,7 +131,7 @@ ShotMask / 枪声标注与探测 — 要点速查
 
 6.1  evaluate_multivideo.py：ref 与检出时刻匹配容差 tol
 
-     默认：TOL = 0.04 s（代码常量）→ 每条真值时刻与「最近一条检出」的时间差 ≤ 0.04 s 计为 TP（对称距离，非半窗倍乘）。
+     默认：TOL = 0.06 s（代码常量 evaluate_multivideo.TOL）→ 每条真值时刻与「最近一条检出」的时间差 ≤ 0.06 s 计为 TP（对称距离，非半窗倍乘）。
 
      命令行：--tol <秒> 覆盖；与训练损失无关，只影响离线 P/R/F1 报告。
 

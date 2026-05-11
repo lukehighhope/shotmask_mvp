@@ -11,8 +11,11 @@ import json
 from collections import defaultdict
 
 
+from training_data_root import get_training_data_root
+
+
 def _root():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "traning data")
+    return get_training_data_root()
 
 
 def _load_split():
@@ -167,3 +170,23 @@ def get_train_folders_with_videos():
         if train_basenames:
             out.append((folder, train_basenames))
     return out
+
+
+def get_all_folders_with_videos_from_split():
+    """Like get_train_folders_with_videos but uses explicit \"train\" + \"val\" lists (full labeled set)."""
+    root = _root()
+    path = os.path.join(root, "dataset_split.json")
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8-sig") as f:
+        data = json.load(f)
+    train_list = data.get("train") or []
+    val_list = data.get("val") or []
+    combined = []
+    if isinstance(train_list, list):
+        combined.extend(train_list)
+    if isinstance(val_list, list):
+        combined.extend(val_list)
+    if not combined:
+        return []
+    return _train_folders_from_explicit_train_list(root, combined)

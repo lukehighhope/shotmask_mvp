@@ -23,7 +23,9 @@ import subprocess
 import shutil
 from pathlib import Path
 
-DATA_ROOT  = Path("traning data")
+from training_data_root import get_training_data_root
+
+DATA_ROOT  = Path(get_training_data_root())
 SPLIT_JSON = DATA_ROOT / "dataset_split.json"
 GT_TOL     = 0.05   # seconds: candidate within ±50ms of cali.txt = positive
 

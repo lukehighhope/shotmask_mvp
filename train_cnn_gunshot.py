@@ -35,7 +35,7 @@ from train_logreg_multivideo import (
     get_fps_duration,
 )
 
-GT_TOL = 0.04
+GT_TOL_DEFAULT = 0.06
 WINDOW_AFTER = 0.08
 
 
@@ -55,6 +55,20 @@ def _merge_training_results(key, payload):
     utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     data[key] = payload
     data["updated_utc"] = utc
+    if key == "cnn_gunshot":
+        try:
+            import evaluate_multivideo as em
+            tol_eval = float(getattr(em, "TOL", 0.06))
+        except Exception:
+            tol_eval = 0.06
+        data.setdefault("evaluation", {})
+        data["evaluation"].update({
+            "script": "evaluate_multivideo.py",
+            "match_tolerance_sec": tol_eval,
+            "match_tolerance_ms": int(round(tol_eval * 1000)),
+            "description": "GT ref vs detection: nearest within tol counts as TP (symmetric). Default TOL in evaluate_multivideo.",
+        })
+
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
@@ -68,7 +82,7 @@ def _merge_training_results(key, payload):
         print(f"Warning: could not append training history: {e}", flush=True)
 
 
-def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
+def build_mel_dataset(folder, cal_cfg=None, only_videos=None, gt_tol=GT_TOL_DEFAULT):
     """对 folder 下每个 mp4：取 ref（同目录 *cali.txt 优先，否则 *.txt）、候选，对每个候选截 Mel 并标 0/1。返回 (mels, labels).
     only_videos: 若为 set（basename 如 '1.mp4'），仅处理这些视频（用于 train/val 划分）。"""
     folder = os.path.abspath(folder)
@@ -133,7 +147,7 @@ def build_mel_dataset(folder, cal_cfg=None, only_videos=None):
             t = float(c["t"])
             if t < t0_filter:
                 continue
-            label = 1 if any(abs(t - rt) <= GT_TOL for rt in ref_times) else 0
+            label = 1 if any(abs(t - rt) <= gt_tol for rt in ref_times) else 0
             mel = mel_at_time(data, sr, t)
             mels.append(mel)
             labels.append(label)
@@ -150,6 +164,17 @@ def main():
     ap.add_argument("--folder", default="01032026", help="Single folder with .mp4 and .txt ref (or root when --recursive)")
     ap.add_argument("--recursive", action="store_true", help="Use all immediate subfolders of --folder (e.g. traning data -> 01032026, outdoor-...)")
     ap.add_argument("--use-split", action="store_true", help="Use traning data/dataset_split.json: explicit \"train\" paths when present; else legacy split in dataset_split.py. Common rule: first sorted .mp4 per folder = val, rest = train.")
+    ap.add_argument(
+        "--use-split-all",
+        action="store_true",
+        help='Use all videos in dataset_split.json "train" + "val" (full labeled set). Overrides --use-split.',
+    )
+    ap.add_argument(
+        "--gt-tol",
+        type=float,
+        default=GT_TOL_DEFAULT,
+        help="Positive mel label if candidate is within this many seconds of a ref shot (default: 0.06, match eval tol)",
+    )
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -168,7 +193,23 @@ def main():
         print("PyTorch required: pip install torch")
         return 1
 
-    if args.use_split:
+    if args.use_split_all:
+        try:
+            from dataset_split import get_all_folders_with_videos_from_split
+        except ImportError:
+            print("dataset_split.py required for --use-split-all (same dir as train_cnn_gunshot.py)")
+            return 1
+        folders_with_videos = get_all_folders_with_videos_from_split()
+        if not folders_with_videos:
+            print("No train+val folders from dataset_split")
+            return 1
+        print(f"Using dataset_split.json train+val (full): {len(folders_with_videos)} folder(s)\n")
+        mels, labels = [], []
+        for folder, only_videos in folders_with_videos:
+            m, l = build_mel_dataset(folder, only_videos=only_videos, gt_tol=args.gt_tol)
+            mels.extend(m)
+            labels.extend(l)
+    elif args.use_split:
         try:
             from dataset_split import get_train_folders_with_videos
         except ImportError:
@@ -181,7 +222,7 @@ def main():
         print(f"Using dataset_split.json (val = first sorted .mp4 per folder; this run = train paths only): {len(folders_with_videos)} folder(s)\n")
         mels, labels = [], []
         for folder, only_videos in folders_with_videos:
-            m, l = build_mel_dataset(folder, only_videos=only_videos)
+            m, l = build_mel_dataset(folder, only_videos=only_videos, gt_tol=args.gt_tol)
             mels.extend(m)
             labels.extend(l)
     elif args.recursive:
@@ -198,11 +239,11 @@ def main():
         print(f"Using {len(subfolders)} folder(s): {subfolders}\n")
         mels, labels = [], []
         for folder in subfolders:
-            m, l = build_mel_dataset(folder)
+            m, l = build_mel_dataset(folder, gt_tol=args.gt_tol)
             mels.extend(m)
             labels.extend(l)
     else:
-        mels, labels = build_mel_dataset(args.folder)
+        mels, labels = build_mel_dataset(args.folder, gt_tol=args.gt_tol)
     if not mels or len(set(labels)) < 2:
         print("Not enough data or only one class.")
         return 1
@@ -285,6 +326,12 @@ def main():
     }, args.out)
     print(f"Saved: {args.out} (best loss {best_loss:.4f} @ epoch {best_epoch})")
 
+    split_desc = args.folder
+    if args.use_split_all:
+        split_desc = "dataset_split.json train+val (--use-split-all)"
+    elif args.use_split:
+        split_desc = "dataset_split.json train paths (--use-split)"
+
     _merge_training_results("cnn_gunshot", {
         "checkpoint": os.path.abspath(args.out),
         "arch": arch,
@@ -295,12 +342,13 @@ def main():
         "augment": bool(args.augment),
         "batch": int(args.batch),
         "lr": float(args.lr),
+        "gt_tol": float(args.gt_tol),
         "train_samples": int(len(X)),
         "train_pos": int(n_pos),
         "train_neg": int(n_neg),
         "best_training_loss": float(best_loss),
         "best_training_loss_epoch": int(best_epoch),
-        "split": "dataset_split.json train paths (--use-split)" if args.use_split else args.folder,
+        "split": split_desc,
     })
 
     if args.save_config:

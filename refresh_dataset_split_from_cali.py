@@ -3,7 +3,9 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-root = Path("traning data")
+from training_data_root import get_training_data_root
+
+root = Path(get_training_data_root())
 cali_files = sorted(p for p in root.rglob("*cali.txt") if "backup" not in p.parts)
 by_folder = defaultdict(set)
 for cali in cali_files:

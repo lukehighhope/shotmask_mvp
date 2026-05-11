@@ -1,9 +1,21 @@
 @echo off
 REM shotmask_mvp annotate launcher — 2026-05-08
 REM All behavior (video /video, HTML toolbar, cache) lives in annotate_shots.py next to this file.
+REM Uses calibrated_detector_params.json min_confidence_threshold (currently 0.65). For old "all lines" behavior: add --annotate-loose.
 
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+
+REM ---- Data / file picker on D: (edit SHOTMASK_DATA_BASE if yours differs) -----
+REM annotate_shots picks up SHOTMASK_PICKER_DIR for Open Video; training scripts use SHOTMASK_TRAINING_DATA_ROOT.
+set "SHOTMASK_DATA_BASE=D:\shotmask_data\traning data"
+if not defined SHOTMASK_TRAINING_DATA_ROOT (
+  set "SHOTMASK_TRAINING_DATA_ROOT=!SHOTMASK_DATA_BASE!"
+)
+if not defined SHOTMASK_PICKER_DIR (
+  set "SHOTMASK_PICKER_DIR=!SHOTMASK_DATA_BASE!\outdoor"
+)
+REM ------------------------------------------------------------------------------
 
 REM ---- Opening video --------------------------------------------------------
 REM Double-click this bat        = file picker (no args).
@@ -34,6 +46,8 @@ echo [%date% %time%] Starting annotate...
 echo.
 echo   Working folder: %CD%
 echo   Script file: %~dp0annotate_shots.py
+echo   Training data root: !SHOTMASK_TRAINING_DATA_ROOT!
+echo   Open Video picker folder: !SHOTMASK_PICKER_DIR!
 echo.
 
 set "ANNOTATE_PY=%~dp0annotate_shots.py"
