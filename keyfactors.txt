@@ -78,7 +78,7 @@ ShotMask / 枪声标注与探测 — 要点速查
 
      含义：默认为项目下的 training data/；若数据在别的盘符，可先 set 环境变量再跑 train_*、evaluate_multivideo --use-split、refresh_dataset_split_from_cali、count_data 等。
 
-     例（JSON 里路径为 outdoor/xxx.mp4）：set SHOTMASK_TRAINING_DATA_ROOT=F:\training data
+     例（JSON 里路径为 outdoor/xxx.mp4）：set SHOTMASK_TRAINING_DATA_ROOT=D:\shotmask_data\training data
      （该目录内应有 dataset_split.json 与 outdoor\ 等子文件夹；不要把变量指到单独的 outdoor 子目录，除非你改了 JSON 相对路径写法。）
 
      实现见 training_data_root.py。

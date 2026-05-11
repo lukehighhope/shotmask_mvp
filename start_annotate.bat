@@ -8,7 +8,7 @@ cd /d "%~dp0"
 
 REM ---- Training data root / file picker (edit SHOTMASK_DATA_BASE if yours differs) -----
 REM annotate_shots picks up SHOTMASK_PICKER_DIR for Open Video; training scripts use SHOTMASK_TRAINING_DATA_ROOT.
-set "SHOTMASK_DATA_BASE=F:\training data"
+set "SHOTMASK_DATA_BASE=D:\shotmask_data\training data"
 if not defined SHOTMASK_TRAINING_DATA_ROOT (
   set "SHOTMASK_TRAINING_DATA_ROOT=!SHOTMASK_DATA_BASE!"
 )

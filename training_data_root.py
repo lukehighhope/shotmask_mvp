@@ -4,10 +4,10 @@ Training / split data root: same layout as repo's default ``training data/`` (da
 
 Override with environment variable **SHOTMASK_TRAINING_DATA_ROOT** (absolute path).
 
-Example: if videos live under ``F:\\training data\\outdoor\\...`` and JSON paths
+Example: if videos live under ``D:\\shotmask_data\\training data\\outdoor\\...`` and JSON paths
 are ``outdoor/foo/bar.mp4``, set::
 
-    set SHOTMASK_TRAINING_DATA_ROOT=F:\\training data
+    set SHOTMASK_TRAINING_DATA_ROOT=D:\\shotmask_data\\training data
 
 (not the ``...\\outdoor`` folder alone, unless you change split paths accordingly).
 """
