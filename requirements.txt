@@ -1,9 +1,13 @@
-numpy
-scipy
-soundfile
-opencv-python
-Pillow
-matplotlib
-librosa
-pytesseract
-torch
+# Pin set from pip freeze on a working dev env (adjust torch if you use CUDA wheels).
+# CPU PyTorch:  pip install -r requirements.txt
+# CUDA 12.4:   pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cu124
+
+numpy==2.3.5
+scipy==1.17.0
+soundfile==0.13.1
+opencv-python==4.13.0.90
+Pillow==12.1.0
+matplotlib==3.10.8
+librosa==0.11.0
+pytesseract==0.3.13
+torch==2.6.0

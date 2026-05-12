@@ -8,20 +8,20 @@
   "cnn_gunshot": {
     "checkpoint": "C:\\Users\\Cao\\Downloads\\shotmask_mvp\\outputs\\cnn_gunshot.pt",
     "arch": "default",
-    "epochs_requested": 30,
+    "epochs_requested": 40,
     "start_epoch_before": 0,
-    "end_epoch_counter": 30,
+    "end_epoch_counter": 40,
     "resume": false,
     "augment": true,
     "batch": 32,
     "lr": 0.001,
     "gt_tol": 0.06,
-    "train_samples": 22765,
-    "train_pos": 3062,
-    "train_neg": 19703,
-    "best_training_loss": 0.2753841549398775,
-    "best_training_loss_epoch": 27,
-    "split": "dataset_split.json train+val (--use-split-all)"
+    "train_samples": 25380,
+    "train_pos": 3486,
+    "train_neg": 21894,
+    "best_training_loss": 0.239039012626217,
+    "best_training_loss_epoch": 39,
+    "split": "dataset_split.json train paths (--use-split)"
   },
-  "updated_utc": "2026-05-09T15:08:37Z"
+  "updated_utc": "2026-05-11T22:22:47Z"
 }

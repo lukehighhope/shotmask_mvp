@@ -140,12 +140,22 @@ ShotMask / 枪声标注与探测 — 要点速查
      与默认 tol 同步的说明写在 outputs/training_results_latest.json → evaluation 块（machine-readable）。
 
 
-6.2  outputs/training_history.jsonl
+6.2  outputs/detection_val_benchmark.jsonl（推荐每次训完记一行）
+
+     CNN 端到端 pooled R 与 train_audio_gunshot（AST）打印的 「Val Recall」不是同一口径（后者是候选人二分类）；要比进步应对固定 val 离线评测追加记录：
+
+       set SHOTMASK_TRAINING_DATA_ROOT=D:\shotmask_data\training data
+       python evaluate_multivideo.py --use-split --cnn-only --record-jsonl outputs/detection_val_benchmark.jsonl --record-tag after_cnn_40ep
+
+     不写 --cnn-only 则用当前 calibrated 的融合管线。每条 JSON 含 pooled、逐视频拆分、dataset_split.json 内容 sha256 前缀、校准 JSON 里模型路径快照。划分变了指纹会变，可比时先看 meta.training_data_split.sha256_16 是否一致。
+
+
+6.3  outputs/training_history.jsonl
 
      含义：train_cnn_gunshot 每次跑完追加一行 JSON（含当次超参、样本数、best loss 等）；历史上若曾手写回填，也会带 evaluate_multivideo_match_tolerance_* 等字段。
 
 
-6.3  「程序员是不是更喜欢用 JSON 记这些？」
+6.4  「程序员是不是更喜欢用 JSON 记这些？」
 
      • 记「给程序读」的字段（路径、数字、版本）——JSON（或 YAML/TOML）很常见：一行/一个文件就能被脚本、CI、notebook 直接解析，且多数语言标准库或一行依赖即可读写。
 

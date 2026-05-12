@@ -526,6 +526,8 @@ def write_calibration_viewer_html(html_path, data, video_path=None):
         data["calibration_save_dir"] = video_dir
         data["calibration_save_path"] = os.path.join(video_dir, video_base + "cali.txt")
         data["calibration_beep_path"] = os.path.join(video_dir, video_base + "beep.txt")
+        data["calibration_fp_path"] = os.path.join(video_dir, video_base + "fp.txt")
+        data["calibration_fn_path"] = os.path.join(video_dir, video_base + "fn.txt")
         data["calibration_http_url"] = "http://127.0.0.1:8765/" + os.path.basename(html_path).replace("\\", "/")
     else:
         if "video_base_name" not in data:
@@ -533,6 +535,8 @@ def write_calibration_viewer_html(html_path, data, video_path=None):
         data.setdefault("calibration_save_dir", "")
         data.setdefault("calibration_save_path", "")
         data.setdefault("calibration_beep_path", "")
+        data.setdefault("calibration_fp_path", "")
+        data.setdefault("calibration_fn_path", "")
         data.setdefault("calibration_http_url", "")
     data_json = json.dumps(data)
     video_src = ""

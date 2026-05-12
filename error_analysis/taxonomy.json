@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "description_zh": "人工标注每条 FP/FN 的主因（可多标，summarize 时取 human_primary）。自动 hint 仅供参考。",
+  "fp": [
+    {
+      "id": "FP_OTHER_SHOOTER",
+      "label_zh": "别人的枪",
+      "label_en": "Other shooter's bang / adjacent lane",
+      "notes": "非本目标的击发；若有多声道/画面可佐证"
+    },
+    {
+      "id": "FP_STEEL_HIT",
+      "label_zh": "steel hit",
+      "label_en": "Target hit ring / ding",
+      "notes": "箭头撞靶金属声，常与真枪时在谱上可分但易混"
+    },
+    {
+      "id": "FP_BEEP_TAIL",
+      "label_zh": "beep（含哔声尾部/泄漏）",
+      "label_en": "Start-beep bleed / tonal residue",
+      "notes": "看 seconds_after_beep 很小 + 波形像纯音残余"
+    },
+    {
+      "id": "FP_RELOAD_MECH",
+      "label_zh": "reload（装填相关）",
+      "label_en": "Reload rack / bolt / clip",
+      "notes": ""
+    },
+    {
+      "id": "FP_FOOTSTEP_HOLSTER",
+      "label_zh": "脚步 / 枪套 / 机械声",
+      "label_en": "Footsteps holster tripod gear",
+      "notes": ""
+    },
+    {
+      "id": "FP_ECHO",
+      "label_zh": "echo",
+      "label_en": "Environmental echo after real shot",
+      "notes": "hint might_echo_prior_gt_shot=true 常见于室内"
+    },
+    {
+      "id": "FP_UNKNOWN",
+      "label_zh": "未分类 FP",
+      "label_en": "Unlabeled FP",
+      "notes": ""
+    }
+  ],
+  "fn": [
+    {
+      "id": "FN_FIRST_SHOT",
+      "label_zh": "第一枪漏",
+      "label_en": "Missed first post-beep shot",
+      "notes": "is_first_gt=true"
+    },
+    {
+      "id": "FN_RAPID_PAIR",
+      "label_zh": "连续快枪漏",
+      "label_en": "Rapid-follow shot missed",
+      "notes": "gap_sec_after_prev_gt 较短"
+    },
+    {
+      "id": "FN_QUIET_SOFT",
+      "label_zh": "小声音漏",
+      "label_en": "Quiet / far / damped onset",
+      "notes": ""
+    },
+    {
+      "id": "FN_AGC_COMPRESSION",
+      "label_zh": "AGC / 压缩导致漏",
+      "label_en": "AGC masking second transient",
+      "notes": ""
+    },
+    {
+      "id": "FN_MASKED_OTHER",
+      "label_zh": "被别人枪声覆盖",
+      "label_en": "Masked by other's loud bang",
+      "notes": ""
+    },
+    {
+      "id": "FN_BEEP_ALIGNMENT",
+      "label_zh": "beep / 切片时间轴对齐错",
+      "label_en": "Beep timeline or labeling misalignment",
+      "notes": "GT 早于真实击发或可听 onset；校准 *beep / *cali 错"
+    },
+    {
+      "id": "FN_STAGE2_REJECT",
+      "label_zh": "有候选但被 CNN / 阈值刷掉",
+      "label_en": "Candidate exists; classifier rejected",
+      "notes": "nearest_cand_peak_dt 小而 nearest_cand_confidence 中等"
+    },
+    {
+      "id": "FN_NO_CANDIDATE",
+      "label_zh": "候选峰根本就没有",
+      "label_en": "Stage1 onset missed",
+      "notes": "nearest_cand_peak_dt 大或为 null"
+    },
+    {
+      "id": "FN_UNKNOWN",
+      "label_zh": "未分类 FN",
+      "label_en": "Unlabeled FN",
+      "notes": ""
+    }
+  ]
+}

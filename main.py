@@ -12,6 +12,9 @@ from ref_from_image import get_ref_times_for_video
 from overlay.render_frames import render_overlay_frames
 from overlay.encode_overlay import encode_webm
 
+# Same match tolerance as evaluate_multivideo.py (TP/FN bookkeeping for GT diag & sweeps)
+from evaluate_multivideo import TOL as GT_MATCH_TOLERANCE
+
 
 def _nearest_within(times, t, tol):
     """Return (idx, dt) for nearest element within tol, else (None, None)."""
@@ -51,13 +54,17 @@ def non_maximum_suppression(detections, time_threshold_s=0.06):
     return kept
 
 
-def _print_gt_diagnostics(ref_times, shots, candidates, tol=0.04):
+def _print_gt_diagnostics(ref_times, shots, candidates, tol=None):
     """
     Diagnostics against GT (ref_times):
     - candidate_coverage
     - per-FN: is there candidate within tol, its P(shot)=score, and cluster rank (1st/2nd/...)
     - FN-candidate score vs FP-candidate score distribution
+
+    tol defaults to GT_MATCH_TOLERANCE (same as evaluate_multivideo.py TOL, currently 0.06 s).
     """
+    if tol is None:
+        tol = GT_MATCH_TOLERANCE
     if not ref_times:
         print("\n[GT diag] No reference (GT) times available.")
         return
@@ -141,8 +148,10 @@ def _print_gt_diagnostics(ref_times, shots, candidates, tol=0.04):
     print(f"FP-candidates: {_summ_stats(fp_scores)}")
 
 
-def _evaluate_shots(ref_times, shots_list, tol=0.04):
+def _evaluate_shots(ref_times, shots_list, tol=None):
     """Compute TP/FP/FN and P/R/F1 for an already filtered list of shots (no confidence filter)."""
+    if tol is None:
+        tol = GT_MATCH_TOLERANCE
     shot_times = [float(s["t"]) for s in shots_list]
     ref_list = [float(t) for t in ref_times]
     used_shot = set()
@@ -160,14 +169,18 @@ def _evaluate_shots(ref_times, shots_list, tol=0.04):
     return tp, fp, fn, p, r, f1
 
 
-def _precision_recall_at_threshold(ref_times, shots_with_confidence, conf_threshold, tol=0.04):
+def _precision_recall_at_threshold(ref_times, shots_with_confidence, conf_threshold, tol=None):
     """Given ref (GT) times and list of shots with 't' and 'confidence', filter by conf >= conf_threshold, compute TP/FP/FN and P/R."""
+    if tol is None:
+        tol = GT_MATCH_TOLERANCE
     filtered = [s for s in shots_with_confidence if s.get("confidence", 0) >= conf_threshold]
     return _evaluate_shots(ref_times, filtered, tol)
 
 
-def _sweep_confidence_threshold(ref_times, shots_audio, tol=0.04, thresholds=None):
+def _sweep_confidence_threshold(ref_times, shots_audio, tol=None, thresholds=None):
     """Print Precision / Recall / F1 for different confidence thresholds (for tuning)."""
+    if tol is None:
+        tol = GT_MATCH_TOLERANCE
     if thresholds is None:
         thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
     print("\n" + "=" * 60)
@@ -190,11 +203,13 @@ def _sweep_confidence_threshold(ref_times, shots_audio, tol=0.04, thresholds=Non
     print("=" * 60)
 
 
-def _grid_search_audio_postprocess(ref_times, shots_audio, tol=0.04, conf_grid=None, nms_grid=None):
+def _grid_search_audio_postprocess(ref_times, shots_audio, tol=None, conf_grid=None, nms_grid=None):
     """
     Grid search over (min_confidence, NMS window). For each (c, n): filter by confidence >= c,
     apply NMS with window n, then compute P/R/F1. Print table and best params.
     """
+    if tol is None:
+        tol = GT_MATCH_TOLERANCE
     if conf_grid is None:
         conf_grid = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
     if nms_grid is None:
@@ -462,7 +477,7 @@ def main(video, mode="all", shots_filter="all", nms_s=0.0, sweep_threshold=False
             shot_times = [float(s["t"]) for s in shots_audio]
             recovered = []
             for ref_t in ref_times_recovery:
-                if _nearest_within(shot_times, ref_t, 0.04)[0] is not None:
+                if _nearest_within(shot_times, ref_t, GT_MATCH_TOLERANCE)[0] is not None:
                     continue
                 best_c, best_conf, best_dt = None, -1.0, 999.0
                 for c in audio_candidates:
@@ -554,11 +569,11 @@ def main(video, mode="all", shots_filter="all", nms_s=0.0, sweep_threshold=False
     t0_beep_s = t0_beep
     if beeps:
         ref_times = get_ref_times_for_video(video, t0_beep_s) if video else get_ref_shot_times(t0_beep_s)
-        _print_gt_diagnostics(ref_times, shots_audio, audio_candidates, tol=0.04)
+        _print_gt_diagnostics(ref_times, shots_audio, audio_candidates)
         if sweep_threshold:
-            _sweep_confidence_threshold(ref_times, shots_audio, tol=0.04)
+            _sweep_confidence_threshold(ref_times, shots_audio)
         if grid_search:
-            _grid_search_audio_postprocess(ref_times, shots_audio, tol=0.04)
+            _grid_search_audio_postprocess(ref_times, shots_audio)
     shot_times_since_beep = [float(round(s["t"] - t0_beep_s, 4)) for s in shots]
 
     events = {

@@ -5,6 +5,10 @@ Uses *cali.txt directly as ground truth (no beep calibration needed).
 Architecture: AST (Audio Spectrogram Transformer) on mel spectrograms.
 Evaluates precision / recall / F1 on val set after every epoch.
 
+IMPORTANT: epoch Val P/R/F1 measure **classification on detector candidates**, not the same as
+           `evaluate_multivideo.py` **pooled** shot-timing P/R/F1. Track end-to-end progress with
+           `evaluate_multivideo.py --use-split --record-jsonl outputs/detection_val_benchmark.jsonl`.
+
 Usage:
     python train_audio_gunshot.py                      # train + val
     python train_audio_gunshot.py --epochs 60 --augment

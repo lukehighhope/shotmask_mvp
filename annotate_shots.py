@@ -1,6 +1,6 @@
 """
 手动标注工具：0.5 倍速播放 + 可拖拽竖线标注枪声/beep。
-保存结果直接写入 *cali.txt 和 *beep.txt（与 extract_audio_plot.py 格式一致）。
+保存结果写入 *cali.txt、*beep.txt，审计另存 *fp.txt（多检时刻）、*fn.txt（漏检=补真枪时刻，同时也会并入 cali）。
 
 Usage:
   python annotate_shots.py --video "test data/v1.mp4"
@@ -14,9 +14,14 @@ Usage:
   - Ctrl+右键         → 新增/删除 Beep（绿线）
   - 拖拽绿线          → 移动 Beep 时间
   - 点击波形空白处     → 跳转视频到该时间并播放
-  - 保存校准          → 写入 *cali.txt
+  - Shift+左键波形空白 → FP 审计竖线（多检疑点，洋红虚线）→ Save 写入 *fp.txt，不进 cali
+  - Alt+左键波形空白   → FN（漏检真枪）：橙色标记 + **黑线并进 cali**；同一位置再点此带可删掉该 FN 及对应用黑线
+  - 波形角「清空审计标记」「复制审计 JSON」；清空会顺带去掉 FN 记录在 cali 上对应那条黑线（容差对齐）
+  - 保存校准          → 写入 *cali.txt、*fp.txt、*fn.txt（与 beep）
   - 保存 Beep         → 写入 *beep.txt
   - 速度按钮          → 0.25x / 0.5x（默认）/ 1x
+
+首轮可选：python annotate_shots.py --audit-json audit.json （{"fp":[...],"fn":[...]} 单位为秒）
 
 枪声机检后端（仅在缺少 *cali.txt 需要做机器探测时生效）优先级：
   1) 同目录  视频基名.shot_detector.txt   单行：auto | ast | cnn
@@ -123,6 +128,31 @@ def _read_shot_detector_sidecar(path):
         return txt if txt in _ALLOWED_BACKENDS else None
     except OSError:
         return None
+
+
+def _near_dedupe_sorted(times, tol_s=0.03):
+    """Merge sorted-ish floats dropping entries within tol of previous."""
+    merged = sorted(float(x) for x in times if isinstance(x, (int, float)) and x == x)
+    out = []
+    for t in merged:
+        if out and abs(t - out[-1]) < tol_s:
+            continue
+        out.append(t)
+    return out
+
+
+def _read_float_txt_lines(path):
+    """One float per line; skip blanks and #-leading comments."""
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        rows = []
+        for ln in f:
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                continue
+            rows.append(float(s))
+        return rows
 
 
 def _parse_cali_txt_file(cali_path):
@@ -251,10 +281,12 @@ def _patch_html_playback_speed(
     2. Speed toggle buttons
     3. Completely replace mouse handlers with clean annotation behavior:
        - Left-click on waveform → seek + play from that time
-       - Left-drag playhead (blue line) → drag to position, release to play from there
-       - Left-drag on empty waveform → pan waveform view (no video seek)
-       - Right-click = add/delete shot/beep (unchanged)
-       - Scroll = pan; Ctrl+scroll = zoom (unchanged)
+       - Shift+left-click blank → FP audit magenta lines → persisted *fp.txt (not *cali)
+       - Alt+left-click → FN (miss): orange line **and** calibration shot/black line (*cali* + *fn.txt*)
+       - Save time posts *cali.txt, *beep.txt, *fp.txt, *fn.txt*
+       - Left-drag empty waveform → pan
+       - Right-click = add/delete shot/beep; removes nearby FP/FN markers when deleting a shot line
+       - Scroll = pan; Ctrl+scroll = zoom
     """
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
@@ -339,6 +371,23 @@ def _patch_html_playback_speed(
             flush=True,
         )
 
+    # ── 2b. FP/FN audit toolbar (playback-linked overlay; never persisted to cali/beep txt)
+    if 'id="btnAuditClear"' not in html:
+        html = html.replace(
+            '<div id="waveformToolbar"><button id="btnSave" type="button">保存校准</button>'
+            '<button id="btnSaveBeep" type="button">保存 Beep</button>',
+            '<div id="waveformToolbar">'
+            '<button type="button" id="btnAuditClear" '
+            'style="padding:4px 8px;font-size:12px;cursor:pointer;background:#eee;border:1px solid #ccc;'
+            'border-radius:4px;">清空审计标记</button>'
+            '<button type="button" id="btnAuditCopy" '
+            'style="padding:4px 8px;font-size:12px;cursor:pointer;background:#eee;border:1px solid #ccc;'
+            'border-radius:4px;">复制审计 JSON</button>'
+            '<button id="btnSave" type="button">保存校准</button>'
+            '<button id="btnSaveBeep" type="button">保存 Beep</button>',
+            1,
+        )
+
     # ── 3. Toast style (no JS yet — Save All button added after cloneNode in patch 5) ──
     html = html.replace(
         "</head>",
@@ -394,6 +443,7 @@ def _patch_html_playback_speed(
         '\n        }else if(v){'
         '\n          st.textContent="Error: server did not send stream_token — check console [annotate_html]";'
         '\n        }'
+        '\n        if(window._reloadAuditMarksFromData) window._reloadAuditMarksFromData(d);'
         '\n        draw();'
         '\n        if(window._updateSavePathDisplay) window._updateSavePathDisplay();'
         '\n        st.textContent="Loaded: "+(d.video_base_name||p.split(/[\\\\/]/).pop());'
@@ -448,6 +498,133 @@ def _patch_html_playback_speed(
   // Re-bind globals that pointed at the old element
   wrap = newWrap;
   c    = document.getElementById('c');
+
+  // ---- FP/FN audit vertical marks (listen-only overlay; Ctrl+右键 beep unaffected) ----
+  var auditMarksFp = [];
+  var auditMarksFn = [];
+  (function initAuditFromD(){
+    var a=(D&&D.audit_marks_fp)||[];
+    var b=(D&&D.audit_marks_fn)||[];
+    auditMarksFp = a.slice?a.slice().map(Number):[];
+    auditMarksFn = b.slice?b.slice().map(Number):[];
+    auditMarksFp.sort(function(x,y){return x-y;});
+    auditMarksFn.sort(function(x,y){return x-y;});
+  })();
+  function reloadAuditMarksFromD(dd){
+    var ap=(dd&&dd.audit_marks_fp)||[];
+    var an=(dd&&dd.audit_marks_fn)||[];
+    auditMarksFp = ap.slice?ap.slice().map(Number):[];
+    auditMarksFn = an.slice?an.slice().map(Number):[];
+    auditMarksFp.sort(function(x,y){return x-y;});
+    auditMarksFn.sort(function(x,y){return x-y;});
+  }
+  window._reloadAuditMarksFromData = reloadAuditMarksFromD;
+
+  var AUD_TOL=0.03;
+  function dedupeCalibShotsTol(){
+    calibrationShots.sort(function(a,b){return a-b;});
+    var out=[];
+    var i,x;
+    for(i=0;i<calibrationShots.length;i++){
+      x=calibrationShots[i];
+      if(out.length && Math.abs(x-out[out.length-1])<AUD_TOL) continue;
+      out.push(x);
+    }
+    calibrationShots=out;
+  }
+  function removeCalibNearest(tRm){
+    for(var ci=calibrationShots.length-1;ci>=0;ci--){
+      if(Math.abs(calibrationShots[ci]-tRm)<AUD_TOL){
+        calibrationShots.splice(ci,1);
+        return true;
+      }
+    }
+    return false;
+  }
+  function syncFnAuditAfterShotDrag(prevT,newT){
+    for(var ai=0;ai<auditMarksFn.length;ai++){
+      if(Math.abs(auditMarksFn[ai]-prevT)<AUD_TOL){
+        auditMarksFn[ai]=newT;
+        auditMarksFn.sort(function(a,b){return a-b;});
+        return;
+      }
+    }
+  }
+  function toggleFpAuditSeconds(ts){
+    for(var i=0;i<auditMarksFp.length;i++){
+      if(Math.abs(auditMarksFp[i]-ts)<AUD_TOL){
+        auditMarksFp.splice(i,1);
+        return;
+      }
+    }
+    auditMarksFp.push(ts);
+    auditMarksFp.sort(function(a,b){return a-b;});
+  }
+  function toggleFnAuditSeconds(ts){
+    var i, oldFn;
+    for(i=0;i<auditMarksFn.length;i++){
+      oldFn=auditMarksFn[i];
+      if(Math.abs(oldFn-ts)<AUD_TOL){
+        auditMarksFn.splice(i,1);
+        removeCalibNearest(oldFn);
+        return;
+      }
+    }
+    auditMarksFn.push(ts);
+    calibrationShots.push(ts);
+    auditMarksFn.sort(function(a,b){return a-b;});
+    dedupeCalibShotsTol();
+  }
+  function purgeAuditMarkersNearRemovedShot(tRm){
+    for(var i=auditMarksFn.length-1;i>=0;i--){ if(Math.abs(auditMarksFn[i]-tRm)<AUD_TOL) auditMarksFn.splice(i,1); }
+    for(var j=auditMarksFp.length-1;j>=0;j--){ if(Math.abs(auditMarksFp[j]-tRm)<AUD_TOL) auditMarksFp.splice(j,1); }
+  }
+
+  var __drawWaveBeforeAudit = draw;
+  function drawAuditMarksOverlay(){
+    var ctx = c.getContext('2d');
+    var W=c.width, H=c.height;
+    var plotW = W-2*pad;
+    if(plotW<1 || t1<=t0) return;
+    function vlineList(arr,color){
+      ctx.save();
+      ctx.strokeStyle=color;
+      ctx.lineWidth=2;
+      ctx.setLineDash([5,6]);
+      for(var i=0;i<arr.length;i++){
+        var tm=arr[i];
+        if(tm>=t0&&tm<=t1){
+          var px=pad+(tm-t0)/(t1-t0)*plotW;
+          ctx.beginPath();
+          ctx.moveTo(px,pad);
+          ctx.lineTo(px,H-pad);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+    vlineList(auditMarksFp,'#aa00aa');
+    vlineList(auditMarksFn,'#e07020');
+    var lx=W-pad-266, ly2=pad+6+54;
+    ctx.save();
+    ctx.fillStyle='rgba(255,255,255,0.93)';
+    ctx.strokeStyle='#888';
+    ctx.setLineDash([]);
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.rect(lx,ly2,268,48);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font='13px sans-serif';
+    ctx.fillStyle='#703070';
+    ctx.fillText('Shift+单击 紫虚=FP审计→*fp.txt',lx+10,ly2+16);
+    ctx.fillStyle='#a05010';
+    ctx.fillText('Alt+单击 橙=FN→*fn.txt并进cali',lx+10,ly2+32);
+    ctx.fillStyle='#444';
+    ctx.fillText('再点±30ms可撤',lx+10,ly2+44);
+    ctx.restore();
+  }
+  draw = function(){ __drawWaveBeforeAudit(); drawAuditMarksOverlay(); };
 
   // ---- Re-attach wheel (zoom/pan) — same logic as original ----
   wrap.addEventListener('wheel', function(e){
@@ -552,7 +729,16 @@ def _patch_html_playback_speed(
       return;
     }
     if(_mode==='line'){
-      if(_moved){ var t=xToT(rx); if(t!==null){ calibrationShots[_lineIdx]=t; draw(); } }
+      if(_moved){
+        var tln=xToT(rx);
+        if(tln!==null){
+          var prevT=calibrationShots[_lineIdx];
+          calibrationShots[_lineIdx]=tln;
+          syncFnAuditAfterShotDrag(prevT,tln);
+          dedupeCalibShotsTol();
+          draw();
+        }
+      }
       return;
     }
     if(_mode==='beep'){
@@ -580,8 +766,16 @@ def _patch_html_playback_speed(
     } else if(_mode==='beep'){
       _beepIdx=-1;
     } else if(_mode==='pan' && !_moved && vid){
-      // Clean click on waveform → seek + play
-      var t=xToT(rx); if(t!==null) seekAndPlay(t);
+      var t=xToT(rx);
+      if(t!==null){
+        if(e.shiftKey){
+          toggleFpAuditSeconds(t);
+          draw();
+        }else if(e.altKey){
+          toggleFnAuditSeconds(t);
+          draw();
+        }else seekAndPlay(t);
+      }
     }
     _mode=null;
   });
@@ -612,7 +806,13 @@ def _patch_html_playback_speed(
     // shot add/delete
     for(var i=0;i<calibrationShots.length;i++){
       var px=pad+(calibrationShots[i]-t0)/(t1-t0)*plotW;
-      if(Math.abs(rx-px)<=10){ calibrationShots.splice(i,1); draw(); return; }
+      if(Math.abs(rx-px)<=10){
+        var gone=calibrationShots[i];
+        calibrationShots.splice(i,1);
+        purgeAuditMarkersNearRemovedShot(gone);
+        draw();
+        return;
+      }
     }
     var t=xToT(rx); if(t!==null){ calibrationShots.push(t); calibrationShots.sort(function(a,b){return a-b;}); draw(); }
   });
@@ -630,31 +830,60 @@ def _patch_html_playback_speed(
     }
     window._showToast = showToast;
 
+    var btnClr=document.getElementById('btnAuditClear');
+    if(btnClr){
+      btnClr.addEventListener('mousedown',function(ev){ev.stopPropagation();});
+      btnClr.addEventListener('click',function(ev){
+        ev.preventDefault(); ev.stopPropagation();
+        var j, fnSnap=auditMarksFn.slice();
+        for(j=0;j<fnSnap.length;j++) removeCalibNearest(fnSnap[j]);
+        auditMarksFn.length=0;
+        auditMarksFp.length=0;
+        dedupeCalibShotsTol();
+        draw(); showToast('已清空审计标记 (+FN 并进 cali)', true);
+      });
+    }
+    var btnAj=document.getElementById('btnAuditCopy');
+    if(btnAj){
+      btnAj.addEventListener('mousedown',function(ev){ev.stopPropagation();});
+      btnAj.addEventListener('click',function(ev){
+        ev.preventDefault(); ev.stopPropagation();
+        var s=JSON.stringify({fp:auditMarksFp.slice(),fn:auditMarksFn.slice()});
+        if(navigator.clipboard && navigator.clipboard.writeText){
+          navigator.clipboard.writeText(s).then(function(){ showToast('已复制审计 JSON', true); })
+            .catch(function(){ window.prompt('审计 JSON:', s); });
+        }else window.prompt('审计 JSON:', s);
+      });
+    }
+
     function doSave(){
       var caliPath=D.calibration_save_path;
       var beepPath=D.calibration_beep_path;
+      var fpPath=D.calibration_fp_path;
+      var fnPath=D.calibration_fn_path;
       var shots=calibrationShots.slice().sort(function(a,b){return a-b;});
       var beeps=calibrationBeepTimes.slice().sort(function(a,b){return a-b;});
+      var fpa=auditMarksFp.slice().sort(function(a,b){return a-b;});
+      var fna=auditMarksFn.slice().sort(function(a,b){return a-b;});
       var caliText=shots.map(function(t){return t.toFixed(4);}).join('\\n');
       var beepText=beeps.map(function(t){return t.toFixed(4);}).join('\\n');
+      var fpTxt=fpa.map(function(t){return t.toFixed(4);}).join('\\n');
+      var fnTxt=fna.map(function(t){return t.toFixed(4);}).join('\\n');
       var saved=0, total=0;
       function done(ok,msg){ saved++; if(saved===total){ showToast(ok?'Saved!':('Error: '+msg), ok); } }
-      if(caliPath){
+      function postTxt(p, txt){
+        if(!p){ return; }
         total++;
         fetch('/save_calibration',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({path:caliPath,content:caliText})})
+          body:JSON.stringify({path:p,content:txt})})
         .then(function(r){return r.json();})
         .then(function(o){ done(o.ok, o.error||''); })
         .catch(function(e){ done(false,''+e); });
       }
-      if(beepPath){
-        total++;
-        fetch('/save_calibration',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({path:beepPath,content:beepText})})
-        .then(function(r){return r.json();})
-        .then(function(o){ done(o.ok, o.error||''); })
-        .catch(function(e){ done(false,''+e); });
-      }
+      postTxt(caliPath, caliText);
+      postTxt(beepPath, beepText);
+      postTxt(fpPath, fpTxt);
+      postTxt(fnPath, fnTxt);
       if(total===0){ showToast('No save path set.', false); }
     }
     window._doSave = doSave;
@@ -700,7 +929,9 @@ def _patch_html_playback_speed(
         e.preventDefault(); e.stopPropagation();
         var msg='Save annotations?\\n'+
           (D.calibration_save_path?'  shots -> '+D.calibration_save_path+'\\n':'')+
-          (D.calibration_beep_path?'  beep  -> '+D.calibration_beep_path:'');
+          (D.calibration_beep_path?'  beep -> '+D.calibration_beep_path+'\\n':'')+
+          (D.calibration_fp_path?'  fp   -> '+D.calibration_fp_path+'\\n':'')+
+          (D.calibration_fn_path?'  fn   -> '+D.calibration_fn_path:'');
         if(!confirm(msg)) return;
         doSave();
       });
@@ -713,20 +944,24 @@ def _patch_html_playback_speed(
         var i=Math.max(p.lastIndexOf('/'), p.lastIndexOf(String.fromCharCode(92)));
         return i<0 ? ['',p] : [p.slice(0,i+1), p.slice(i+1)];
       }
-      var sp=splitPath(D.calibration_save_path||D.calibration_beep_path||'');
+      var sp=splitPath(D.calibration_save_path||D.calibration_beep_path||D.calibration_fp_path||D.calibration_fn_path||'');
       var dir=sp[0]||'';
       var el=document.getElementById('savePathDisplay');
       if(el){
         var parts=[];
         if(D.calibration_save_path) parts.push('shots: '+splitPath(D.calibration_save_path)[1]);
         if(D.calibration_beep_path) parts.push('beep: '+splitPath(D.calibration_beep_path)[1]);
+        if(D.calibration_fp_path) parts.push('fp: '+splitPath(D.calibration_fp_path)[1]);
+        if(D.calibration_fn_path) parts.push('fn: '+splitPath(D.calibration_fn_path)[1]);
         el.textContent=parts.join('   |   ');
       }
       var hint=document.getElementById('saveDirHint');
       if(hint){
         var rowV=D.annotation_video_path?('Video: '+D.annotation_video_path):'';
         var row2=(D.calibration_save_path?'shots: '+splitPath(D.calibration_save_path)[1]:'')+
-                 (D.calibration_beep_path?'   beep: '+splitPath(D.calibration_beep_path)[1]:'');
+                 (D.calibration_beep_path?'   beep: '+splitPath(D.calibration_beep_path)[1]:'')+
+                 (D.calibration_fp_path?'   fp: '+splitPath(D.calibration_fp_path)[1]:'')+
+                 (D.calibration_fn_path?'   fn: '+splitPath(D.calibration_fn_path)[1]:'');
         var rowSave=dir?('Save dir: '+dir+'  |  '+row2):row2;
         hint.textContent=(rowV?(rowV+'  |  '):'')+(rowSave||rowV||'');
       }
@@ -765,6 +1000,30 @@ def _find_annotation_dir(video_base, start_dir):
     return start_dir
 
 
+def _load_audit_markers_seed(path):
+    """Load optional JSON {\"fp\":[sec,...], \"fn\":[...]} for annotate waveform overlays."""
+    p = os.path.abspath(os.path.normpath(path))
+    if not os.path.isfile(p):
+        raise FileNotFoundError(f"audit JSON not found: {p}")
+    with open(p, encoding="utf-8") as f:
+        obj = json.load(f)
+    if not isinstance(obj, dict):
+        raise ValueError("audit JSON must be a JSON object")
+
+    def _flt_arr(raw):
+        if raw is None:
+            return []
+        if not isinstance(raw, (list, tuple)):
+            raise ValueError("audit times must be a JSON array")
+        return [float(x) for x in raw]
+
+    fp = _flt_arr(obj.get("fp") or obj.get("audit_marks_fp"))
+    fn = _flt_arr(obj.get("fn") or obj.get("audit_marks_fn"))
+    if not fp and not fn and isinstance(obj.get("times"), list):
+        fp = [float(x) for x in obj["times"]]
+    return {"fp": sorted(fp), "fn": sorted(fn)}
+
+
 def _prepare_video(
     video_path,
     ffmpeg,
@@ -772,6 +1031,7 @@ def _prepare_video(
     session_shot_backend="auto",
     annotate_loose_min_conf=False,
     annotate_shot_nms_sec=0.1,
+    audit_marker_seed=None,
 ):
     """Extract audio, load or detect annotations, build waveform data.
     Returns (cal_data_dict, video_dir, video_base, anno_dir).
@@ -854,6 +1114,23 @@ def _prepare_video(
         except Exception as e:
             print(f"  Shot detection failed: {e}")
 
+    fp_txt_path = os.path.join(anno_dir, video_base + "fp.txt")
+    fn_txt_path = os.path.join(anno_dir, video_base + "fn.txt")
+    audit_fp_disk = _read_float_txt_lines(fp_txt_path)
+    audit_fn_disk = _read_float_txt_lines(fn_txt_path)
+    if audit_fp_disk:
+        print(f"  Loaded *fp.txt ({fp_txt_path}): {audit_fp_disk}")
+    if audit_fn_disk:
+        print(f"  Loaded *fn.txt ({fn_txt_path}): {audit_fn_disk} (merge into calibration shots)")
+    seed = audit_marker_seed or {}
+    audit_fp_seed = list(seed.get("fp") or seed.get("audit_marks_fp") or [])
+    audit_fn_seed = list(seed.get("fn") or seed.get("audit_marks_fn") or [])
+    shot_times.extend(audit_fn_disk)
+    shot_times.extend(audit_fn_seed)
+    shot_times = _near_dedupe_sorted(shot_times, tol_s=0.03)
+    audit_marks_fp = _near_dedupe_sorted(audit_fp_disk + audit_fp_seed, tol_s=0.03)
+    audit_marks_fn = _near_dedupe_sorted(audit_fn_disk + audit_fn_seed, tol_s=0.03)
+
     print("Building waveform data...")
     wdata = get_waveform_data(
         audio_stereo, beep_times=beep_times, shot_times=shot_times, ref_shot_times=[]
@@ -864,7 +1141,11 @@ def _prepare_video(
     cal_data["video_base_name"]       = video_base
     cal_data["calibration_save_path"] = cali_path
     cal_data["calibration_beep_path"] = beep_path
+    cal_data["calibration_fp_path"] = fp_txt_path
+    cal_data["calibration_fn_path"] = fn_txt_path
     cal_data["annotation_video_path"] = video
+    cal_data["audit_marks_fp"] = audit_marks_fp
+    cal_data["audit_marks_fn"] = audit_marks_fn
     print(
         "[_prepare_video] embedding cal_data: "
         f"annotation_video_path={video!r} | D.duration={cal_data.get('duration')!r} | len(t)={len(cal_data.get('t') or [])}",
@@ -1421,6 +1702,12 @@ def main():
         metavar="SEC",
         help="Merge detections within SEC s, keep highest confidence (default 0.1; 0=off).",
     )
+    ap.add_argument(
+        "--audit-json",
+        default=None,
+        metavar="PATH",
+        help='Optional audit times JSON {\"fp\":[sec,...],\"fn\":[…]} merge with *fp.txt/*fn.txt ; fn-times also merged into calibration (*cali).',
+    )
     args = ap.parse_args()
 
     if args.pick or os.environ.get("SHOTMASK_ALWAYS_PICK", "").strip().lower() in (
@@ -1473,6 +1760,15 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs("tmp", exist_ok=True)
 
+    audit_seed = None
+    if args.audit_json:
+        try:
+            audit_seed = _load_audit_markers_seed(args.audit_json)
+            print(f"Loaded audit markers from JSON: fp={len(audit_seed['fp'])} fn={len(audit_seed['fn'])}", flush=True)
+        except Exception as ex:
+            print(f"Error reading --audit-json: {ex}", flush=True)
+            return 1
+
     # ── 1. Process initial video ──────────────────────────────────────
     cal_data, video_dir, video_base, anno_dir = _prepare_video(
         video,
@@ -1481,6 +1777,7 @@ def main():
         session_shot_backend=args.shot_backend,
         annotate_loose_min_conf=args.annotate_loose,
         annotate_shot_nms_sec=args.shot_nms,
+        audit_marker_seed=audit_seed,
     )
 
     # ── 2. Generate HTML ──────────────────────────────────────────────

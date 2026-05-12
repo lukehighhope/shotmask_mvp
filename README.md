@@ -143,6 +143,14 @@ pytest -q
 
 On **GitHub**, **`.github/workflows/ci.yml`** runs `ffmpeg` setup (for the mux test), installs dependencies, then `pytest` on **Ubuntu** / Python 3.11 for pushes and pull requests.
 
+### Error taxonomy (FP/FN pareto)
+
+Structured labels live in **`error_analysis/taxonomy.json`**. Export one row per FP/FN plus automatic **hints**:
+
+`python error_analysis/export_manifest.py --use-split --cnn-only -o outputs/error_audit_manifest.jsonl`  
+Annotate **`human_primary`** (taxonomy ids, e.g. `FP_ECHO`, `FN_RAPID_PAIR`) then:  
+`python error_analysis/summarize_labels.py outputs/error_audit_manifest.jsonl --combined --target-pct 0.80`
+
 ---
 
 ## Docs
