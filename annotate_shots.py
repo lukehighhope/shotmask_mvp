@@ -17,8 +17,7 @@ Usage:
   - Shift+左键波形空白 → FP 审计竖线（多检疑点，洋红虚线）→ Save 写入 *fp.txt，不进 cali
   - Alt+左键波形空白   → FN（漏检真枪）：橙色标记 + **黑线并进 cali**；同一位置再点此带可删掉该 FN 及对应用黑线
   - 波形角「清空审计标记」「复制审计 JSON」；清空会顺带去掉 FN 记录在 cali 上对应那条黑线（容差对齐）
-  - 保存校准          → 写入 *cali.txt、*fp.txt、*fn.txt（与 beep）
-  - 保存 Beep         → 写入 *beep.txt
+  - Save time         → *cali / *beep / *fp / *fn 四类分别保存；**哪一类为空则跳过不写该文件**
   - 速度按钮          → 0.25x / 0.5x（默认）/ 1x
 
 首轮可选：python annotate_shots.py --audit-json audit.json （{"fp":[...],"fn":[...]} 单位为秒）
@@ -871,8 +870,9 @@ def _patch_html_playback_speed(
       var fnTxt=fna.map(function(t){return t.toFixed(4);}).join('\\n');
       var saved=0, total=0;
       function done(ok,msg){ saved++; if(saved===total){ showToast(ok?'Saved!':('Error: '+msg), ok); } }
-      function postTxt(p, txt){
-        if(!p){ return; }
+      function postTxtIfNonempty(p, txt){
+        if(!p) return;
+        if(!(txt&&String(txt).replace(/^\\s+|\\s+$/g,''))) return;
         total++;
         fetch('/save_calibration',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({path:p,content:txt})})
@@ -880,11 +880,14 @@ def _patch_html_playback_speed(
         .then(function(o){ done(o.ok, o.error||''); })
         .catch(function(e){ done(false,''+e); });
       }
-      postTxt(caliPath, caliText);
-      postTxt(beepPath, beepText);
-      postTxt(fpPath, fpTxt);
-      postTxt(fnPath, fnTxt);
-      if(total===0){ showToast('No save path set.', false); }
+      postTxtIfNonempty(caliPath, caliText);
+      postTxtIfNonempty(beepPath, beepText);
+      postTxtIfNonempty(fpPath, fpTxt);
+      postTxtIfNonempty(fnPath, fnTxt);
+      if(total===0){
+        if(caliPath||beepPath||fpPath||fnPath){ showToast('无内容写入（四类均为空的已跳过保存）', true); }
+        else { showToast('No save path set.', false); }
+      }
     }
     window._doSave = doSave;
 
